@@ -18,8 +18,8 @@ importers:
         specifier: ^5.2.1
         version: 5.2.1
       little-durable-objects:
-        specifier: file:../little-durable-objects/npm
-        version: file:../little-durable-objects/npm
+        specifier: file:../Desktop/projects/durable-objects/npm
+        version: file:../Desktop/projects/durable-objects/npm
       lucide-react:
         specifier: ^1.42.0
         version: 1.42.0(react@19.2.8)
@@ -901,8 +901,8 @@ packages:
     resolution: {integrity: sha512-WkUDrojuJs0xkgGf2udWxa3yGBRxPtxUkB79i6aCZLRgc7PM8fZe9TosfPDcvEpQZbuFASnHYmRLBLUbmLOIIA==}
     engines: {node: '>= 12.0.0'}
 
-  little-durable-objects@file:../little-durable-objects/npm:
-    resolution: {directory: ../little-durable-objects/npm, type: directory}
+  little-durable-objects@file:../Desktop/projects/durable-objects/npm:
+    resolution: {directory: ../Desktop/projects/durable-objects/npm, type: directory}
     engines: {node: '>=20'}
     hasBin: true
 
@@ -2002,7 +2002,7 @@ snapshots:
       lightningcss-win32-arm64-msvc: 1.33.0
       lightningcss-win32-x64-msvc: 1.33.0
 
-  little-durable-objects@file:../little-durable-objects/npm:
+  little-durable-objects@file:../Desktop/projects/durable-objects/npm:
     dependencies:
       '@discoveryjs/json-ext': 1.1.0
       '@grpc/grpc-js': 1.14.4
