@@ -1,0 +1,38 @@
+{
+  "name": "talking-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env node_modules/little-durable-objects/dist/cli.js run --data-dir .counter-data server/index.mjs",
+    "build": "tsc -b && vite build",
+    "start": "NODE_ENV=production npm run dev",
+    "test": "vitest run && node --test server/*.test.mjs",
+    "typecheck": "tsc -b",
+    "counter": "node --env-file-if-exists=.env node_modules/little-durable-objects/dist/cli.js dev --entrypoint src/durable-objects.ts --port 7110 --data-dir .counter-data",
+    "test:counter:live": "little-durable-objects run --data-dir .counter-data scripts/counter-integration.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/manrope": "^5.3.0",
+    "@openai/agents": "^0.17.0",
+    "express": "^5.2.1",
+    "little-durable-objects": "file:../Desktop/projects/durable-objects/npm",
+    "lucide-react": "^1.42.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.5.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0"
+  }
+}

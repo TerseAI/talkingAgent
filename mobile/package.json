@@ -1,0 +1,29 @@
+{
+  "name": "talking-agent-native",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "dependencies": {
+    "@config-plugins/react-native-webrtc": "^15.0.2",
+    "expo": "~57.0.20",
+    "expo-dev-client": "~57.0.18",
+    "expo-linking": "~57.0.9",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-incall-manager": "^4.2.2",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-webrtc": "^124.0.8"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start --dev-client --host localhost",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "typecheck": "tsc --noEmit",
+    "export:ios": "expo export --platform ios --output-dir build/js-ios"
+  },
+  "private": true
+}

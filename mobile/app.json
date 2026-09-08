@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "Talking Agent",
+    "slug": "talking-agent-native",
+    "scheme": "talkingagent",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "plugins": [
+      "expo-dev-client",
+      ["@config-plugins/react-native-webrtc", { "microphonePermission": "Allow Talking Agent to hear you and other participants during a voice session." }]
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.talkingagent.mobile",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Connect to your local voice agent server.",
+        "NSAppTransportSecurity": { "NSAllowsLocalNetworking": true }
+      }
+    },
+    "android": {
+      "package": "com.talkingagent.mobile",
+      "permissions": ["android.permission.RECORD_AUDIO", "android.permission.MODIFY_AUDIO_SETTINGS"],
+      "blockedPermissions": ["android.permission.CAMERA"],
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
