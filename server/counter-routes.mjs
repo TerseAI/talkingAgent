@@ -1,15 +1,10 @@
 import express from 'express';
 import { z } from 'zod';
-import { counterEvents } from './counter-events.mjs';
+import { logCounter } from '../shared/agent-identity.mjs';
 
-/** @param {Pick<import('../src/durable-objects.ts').Counter, 'getState' | 'getLatestCount' | 'doneSpeaking' | 'stop' | 'reset'> | null} counter */
 export function counterRouter(counter, allowedOrigins) {
   const router = express.Router();
-  router.get('/events', (req, res) => {
-    const parsed = z.string().uuid().safeParse(req.query.clientId);
-    if (!parsed.success) return res.status(400).json({ error: 'Invalid agent identity.' });
-    return counterEvents(counter, parsed.data, req, res);
-  });
+  const clientId = z.union([z.string().uuid(), z.string().regex(/^(Alice|Bob|Charlie|Assistant):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)]);
   router.get('/', async (_req, res) => {
     try { res.json(await counter.getState()); }
     catch { res.status(503).json({ error: 'Start npm run counter, then restart npm run dev.' }); }
@@ -19,11 +14,29 @@ export function counterRouter(counter, allowedOrigins) {
     next();
   });
   router.use(express.json({ limit: '2kb' }));
-  const identity = z.object({ clientId: z.string().uuid() });
+  const identity = z.object({ clientId });
+  router.post('/claim', async (req, res) => {
+    const parsed = identity.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Invalid counter request.' });
+    const abort = new AbortController();
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        abort.abort();
+        void counter.cancel(parsed.data.clientId).catch(() => {});
+      }
+    });
+    try {
+      const result = await counter.getTalkingStick(parsed.data.clientId, abort.signal);
+      if (!res.destroyed) res.json(result);
+    } catch (error) {
+      logCounter('claim rejected', parsed.data.clientId, error.message);
+      if (!res.destroyed) res.status(409).json({ error: error.message });
+    }
+  });
   const actions = {
-    claim: [identity, ({ clientId }) => counter.getLatestCount(clientId)],
-    complete: [identity.extend({ number: z.number().int().min(1).max(100) }), ({ clientId, number }) => counter.doneSpeaking(clientId, number)],
-    cancel: [identity, ({ clientId }) => counter.stop(clientId)],
+
+    complete: [identity, ({ clientId }) => counter.doneSpeaking(clientId)],
+    cancel: [identity, ({ clientId }) => counter.cancel(clientId)],
     reset: [z.object({}), () => counter.reset()],
   };
   for (const [action, [schema, invoke]] of Object.entries(actions)) {
@@ -31,7 +44,7 @@ export function counterRouter(counter, allowedOrigins) {
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ error: 'Invalid counter request.' });
       try { res.json(await invoke(parsed.data)); }
-      catch (error) { res.status(409).json({ error: error.message }); }
+      catch (error) { logCounter(`${action} rejected`, parsed.data.clientId, error.message); res.status(409).json({ error: error.message }); }
     });
   }
   return router;

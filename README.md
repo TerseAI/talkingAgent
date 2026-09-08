@@ -1,39 +1,57 @@
 # Talking Agent
 
-A browser voice agent built with `RealtimeAgent` and `RealtimeSession` from `@openai/agents/realtime`. Each tab has an independent conversation with microphone input, spoken replies, interruptions, text messages, and a transcript.
+Three voice agents share one counter. Each agent uses the normal OpenAI Realtime SDK loop with microphone input, spoken replies, interruptions, and tools. Counting starts only when you ask.
 
-The agent also has four ordinary tools backed by one local durable object: `read_counter`, `get_latest_count`, `done_speaking`, and `release_turn`. Ask it to count to use them. The SDK executes model-selected tools and returns their results to the model. Connecting does not start counting. The durable object keeps a FIFO queue of waiting agent IDs. The `get_latest_count` tool remains pending in the browser until a targeted socket handoff grants its lock. The DO method itself returns immediately; the browser waits outside the actor and rechecks only on a socket notification. The SDK receives the eventual tool result normally, without injected messages or forced responses. Speech and typed questions leave the wait pending; the model’s release tool or the explicit Stop response button cancels it; ending the session closes the socket and removes the agent from the queue. Reconnection rechecks the claim, and reaching 100 resolves waiting tools with `done`.
+## Start the demo
 
-`src/counter-tools.ts` defines the tools; `shared/agent-config.mjs` contains the prompt. There is no application counting loop, forced tool choice, scripted number speech, or automatic playback-based increment. The durable object serializes updates and stores only the next number, talking-stick holder, and FIFO waiting queue. The count records what agents report through `done_speaking`; it does not verify what was audibly spoken or guarantee non-overlapping audio. Ending a session releases its turn without advancing the count.
+From this folder, run the durable-object runtime in one terminal:
 
-## Run locally
+```sh
+npm run counter
+```
 
-Requires Node.js 22.19+, an OpenAI key, and a built local little-durable-objects checkout at `../little-durable-objects`. The SDK dependency points to its `npm` directory.
+Then run **one** web process in a second terminal:
 
-Set `.env`:
+```sh
+npm run dev
+```
+
+This serves all three addresses with one shared coordinator:
+
+- http://localhost:3002 — Alice, Marin voice
+- http://localhost:3003 — Bob, Cedar voice
+- http://localhost:3004 — Charlie, Coral voice
+
+Stop old web processes before starting this version. Do not launch one process per port. Keep both terminals open. Refresh the pages and start fresh conversations after updating. Stop all agents before resetting the count. After an unclean shutdown, reset the counter before starting a new round if an old holder remains.
+
+Requires Node.js 22.19+, the built SDK at `../little-durable-objects/npm`, and these values in `.env`:
 
 ```dotenv
 OPENAI_API_KEY=your_key
 DURABLE_OBJECT_BINARY=/Users/thomaskaratzas/Desktop/Projects/little-durable-objects/target/debug/little-durable-objects
 ```
 
-Start the shared runtime:
+The key stays on the server. The browser receives a short-lived credential. The model is `gpt-realtime-2.1`. No weather or web-search tool is configured.
 
-```sh
-npm run counter
-```
+## Turn flow
 
-Start one or more web hosts in separate terminals:
+1. The model calls `getTalkingStick()`.
+2. Its HTTP request remains open in `server/turn-coordinator.mjs` until the agent gets the turn. There is no wait timeout or repeated request.
+3. The coordinator resolves that request with the reserved number. The SDK returns the tool result to the model.
+4. The agent speaks, then calls `done_speaking()` with no arguments.
+5. The DO verifies the holder, increments the count, and releases the stick. The coordinator directly resolves the next waiting request in FIFO order.
 
-```sh
-PORT=3002 APP_ORIGIN=http://localhost:3002 npm run dev
-PORT=3003 APP_ORIGIN=http://localhost:3003 npm run dev
-PORT=3004 APP_ORIGIN=http://localhost:3004 npm run dev
-```
+There are no coordination WebSockets, server-sent events, broadcasts, or polling. Pending promises live in one Node process. The DO stores only the next number and current holder; no long wait runs inside a serialized DO method.
 
-Open the addresses in Chrome and click **Start conversation**. Speak or type normally; ask the agent to count when desired. All hosts share `.counter-data` and the default counter ID. Stop all agents before resetting the counter. Restart hosts when the runtime's one-hour client credentials expire.
+`release_turn()` cancels a wait or releases the stick without advancing. Cancelling a pending HTTP request removes that waiter. Ending a browser session sends a release request. Graceful server shutdown cancels pending waits and releases the holder. Process crashes lose pending promises; saved counter state survives in `.counter-data`.
 
-The API key stays on the server; browsers receive short-lived credentials. Audio is sent to OpenAI while connected. The model is `gpt-realtime-2.1`. No live weather or web-search tool is configured. The previous native experiment remains in `mobile/`.
+A completed tool call records the model's report, not verified audio playback. The prompt asks for silence while waiting; pending tools alone do not enforce model silence. No code scripts the words or forces tool choices.
+
+## Following the demo
+
+The runtime terminal logs `[counter]` acquisitions, completion reports, and releases. The web terminal logs queued requests. Chrome's console shows named tool starts, arguments, and results. A tool start without a finish remains pending. Session suffixes distinguish duplicate tabs.
+
+The counter display shows the **last observed state**. It refreshes after local tool actions, on tab focus, and with the Refresh button. It does not continuously update from other agents. No microphone audio or conversation transcripts are logged by the application.
 
 ## Verification
 
@@ -43,4 +61,4 @@ npm run build
 npm run test:counter:live
 ```
 
-The live counter test exercises the real durable object across three HTTP hosts with simulated tool calls. It also verifies targeted delivery and disconnect handoff. It does not call OpenAI or test model decisions or audible playback. `scripts/browser-smoke.mjs` checks the UI with stubbed credentials and synthetic microphone input. The old scripted counting/audio test was removed along with its coordinator.
+The live test uses three HTTP listeners sharing one coordinator and a real isolated counter ID. It verifies that a request remains pending until completion and that 1–100 is granted exactly once across three clients. It does not call OpenAI or verify audible playback. The earlier native experiment remains in `mobile/`.

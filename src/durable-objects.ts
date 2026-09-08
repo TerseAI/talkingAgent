@@ -1,35 +1,25 @@
-import { Actor as DurableObject, type ActorSocket } from 'little-durable-objects';
+import { Actor as DurableObject } from 'little-durable-objects';
+
+import { logCounter } from '../shared/agent-identity.mjs';
 
 export class Counter extends DurableObject {
   number = 1;
   talkingStick: string | null = null;
-  waiting: string[] = [];
 
-  async onConnect(socket: ActorSocket<{ clientId: string }>) {
-    socket.setTags(socket.metadata.clientId);
-  }
-
-  async onDisconnect(socket: ActorSocket<{ clientId: string }>) {
-    if (this.connections.some((other) => other.id !== socket.id && other.tags.includes(socket.metadata.clientId))) return;
-    await this.stop(socket.metadata.clientId);
-  }
-
-  async getLatestCount(agentId: string) {
+  async tryGetTalkingStick(agentId: string) {
     if (this.number > 100) return { status: 'done' as const, count: 100, target: 100 };
-    if (this.talkingStick && this.talkingStick !== agentId) {
-      if (!this.waiting.includes(agentId)) this.waiting.push(agentId);
-      return { status: 'waiting' as const };
-    }
+    if (this.talkingStick && this.talkingStick !== agentId) return { status: 'waiting' as const };
+    if (this.talkingStick !== agentId) logCounter('acquired turn', agentId, `number=${this.number}`);
     this.talkingStick = agentId;
     return { status: 'granted' as const, latest_count: this.number - 1, next_number: this.number, target: 100 };
   }
 
-  async doneSpeaking(agentId: string, number: number) {
-    if (number < this.number) return this.getState();
-    if (this.talkingStick !== agentId || number !== this.number) throw new Error('This agent does not hold the talking stick for that number.');
+  async doneSpeaking(agentId: string) {
+    if (this.talkingStick !== agentId) throw new Error('You do not hold the talking stick. Call getTalkingStick before speaking.');
+    logCounter('reported done_speaking', agentId, `number=${this.number}`);
     this.number += 1;
-    this.#nextTurn();
-    return this.getState();
+    this.talkingStick = null;
+    return { status: 'completed' as const };
   }
 
   async getState() {
@@ -37,28 +27,17 @@ export class Counter extends DurableObject {
   }
 
   async stop(agentId: string) {
-    this.waiting = this.waiting.filter((id) => id !== agentId);
-    if (this.talkingStick === agentId) this.#nextTurn();
+    if (this.talkingStick === agentId) {
+      logCounter('released/cancelled', agentId);
+      this.talkingStick = null;
+    }
     return this.getState();
   }
 
   async reset() {
+    logCounter('reset', null, 'next number=1');
     this.number = 1;
     this.talkingStick = null;
-    this.waiting = [];
     return this.getState();
-  }
-
-  #nextTurn() {
-    if (this.number > 100) {
-      for (const agentId of this.waiting) {
-        this.broadcast(JSON.stringify({ type: 'turn_available' }), { tags: [agentId] });
-      }
-      this.waiting = [];
-    }
-    this.talkingStick = this.waiting.shift() ?? null;
-    if (this.talkingStick) {
-      this.broadcast(JSON.stringify({ type: 'turn_available' }), { tags: [this.talkingStick] });
-    }
   }
 }

@@ -3,31 +3,19 @@ import { z } from 'zod';
 import type { CounterLock } from './counter-lock';
 import { counterRequest } from './counter-api';
 
-export function createCounterTools(clientId: string, signal: AbortSignal, claim: CounterLock['claim'], request = counterRequest, cancel = () => {}) {
+export function createCounterTools(clientId: string, signal: AbortSignal, getTalkingStick: CounterLock['getTalkingStick'], request = counterRequest) {
   return [
     tool({
-      name: 'read_counter',
-      description: 'Read the shared counter without taking a turn.',
+      name: 'getTalkingStick',
+      description: 'Acquire your next counting turn. Call once and wait silently until it returns; do not retry while pending. On granted, speak next_number aloud exactly once, THEN call done_speaking. A grant is not spoken audio and is not a completed turn. On done or cancelled, stop counting. Takes no arguments.',
       parameters: z.object({}),
-      execute: () => request('', undefined, signal),
-    }),
-    tool({
-      name: 'get_latest_count',
-      description: 'Wait for the talking stick. Returns granted with next_number once your turn is reserved, done at 100, or cancelled if interrupted. Stay silent while this tool is pending.',
-      parameters: z.object({}),
-      execute: claim,
+      execute: getTalkingStick,
     }),
     tool({
       name: 'done_speaking',
-      description: 'Report the number you have spoken and release the talking stick. This records your report; it does not verify audio playback.',
-      parameters: z.object({ number: z.number().int().min(1).max(100) }),
-      execute: ({ number }) => request('complete', { clientId, number }, signal),
-    }),
-    tool({
-      name: 'release_turn',
-      description: 'Release your talking stick without advancing the count, for example when stopping or interrupted.',
+      description: 'Call exactly once AFTER you have spoken the number from your current grant. Records that number as completed and releases the talking stick so another agent can proceed. Never call before speaking: this tool trusts your report and cannot verify audio. Takes no arguments and returns only a completion acknowledgment, not another number. After completed, immediately call getTalkingStick for your next turn.',
       parameters: z.object({}),
-      execute: () => { cancel(); return request('cancel', { clientId }, signal); },
+      execute: () => request('complete', { clientId }, signal),
     }),
   ];
 }

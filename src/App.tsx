@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { ArrowDownToLine, ArrowUp, AudioLines, Check, ChevronRight, CircleHelp, LoaderCircle, Mic, MicOff, Radio, RotateCcw, Square, Volume2, X } from 'lucide-react';
 import { VoiceController } from './voice-controller';
 import SharedCounter, { useSharedCounter } from './SharedCounter';
+import { agentName } from '../shared/agent-identity.mjs';
 import { AGENT_MODEL, AGENT_VOICE } from '../shared/agent-config.mjs';
 
 type ConfigState = 'loading' | 'ready' | 'missing' | 'error';
@@ -10,12 +11,14 @@ export default function App() {
   const [controller] = useState(() => new VoiceController());
   const voice = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   const [config, setConfig] = useState<ConfigState>('loading');
+  const [agentVoice, setAgentVoice] = useState<string>(AGENT_VOICE);
   const [showHelp, setShowHelp] = useState(false);
   const [draft, setDraft] = useState('');
   const { snapshot: counter, error: counterError } = useSharedCounter();
   const transcriptRef = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
   const configRequest = useRef<AbortController | null>(null);
+  const conversation = voice.transcript.filter((entry) => entry.role !== 'event');
   const active = voice.status === 'connected';
   const connecting = voice.status === 'connecting';
   const inSession = active || connecting;
@@ -29,7 +32,10 @@ export default function App() {
       const response = await fetch('/api/config', { signal: AbortSignal.any([request.signal, AbortSignal.timeout(8_000)]) });
       if (!response.ok) throw new Error('Server unavailable');
       const data = await response.json();
-      if (!request.signal.aborted) setConfig(data.configured ? 'ready' : 'missing');
+      if (!request.signal.aborted) {
+        setAgentVoice(data.voice ?? AGENT_VOICE);
+        setConfig(data.configured ? 'ready' : 'missing');
+      }
     } catch { if (!request.signal.aborted) setConfig('error'); }
   }, []);
 
@@ -53,9 +59,9 @@ export default function App() {
     : active ? voice.activity === 'speaking' ? 'Assistant is speaking' : voice.activity === 'thinking' ? 'Thinking…' : voice.muted ? 'Microphone muted' : 'Listening to you'
     : voice.status === 'ended' ? 'Conversation ended' : voice.status === 'error' ? 'Connection interrupted' : 'Ready when you are';
 
-  const start = () => { setDraft(''); pinnedToBottom.current = true; void controller.start(); };
+  const start = () => { setDraft(''); pinnedToBottom.current = true; void controller.start(agentVoice); };
   const download = () => {
-    const text = voice.transcript.map((entry) => `${entry.role === 'user' ? 'You' : 'Assistant'}: ${entry.text || '[No transcript]'}${entry.status === 'incomplete' ? ' [Interrupted]' : ''}`).join('\n\n');
+    const text = conversation.map((entry) => `${entry.timestamp ?? ''} ${entry.title ?? (entry.role === 'user' ? 'You' : agentName(agentVoice))} [${entry.status}]${entry.callId ? ` (${entry.callId})` : ''}: ${entry.text || '[No transcript]'}`).join('\n\n');
     const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
     const link = document.createElement('a');
     link.href = url;
@@ -88,7 +94,7 @@ export default function App() {
 
         <div className="workspace">
           <section className="voice-panel" aria-label="Voice conversation controls">
-            <div className="panel-topline"><span className="assistant-label"><span className="mini-dot" />Assistant</span><span className="voice-label">{AGENT_VOICE} voice</span></div>
+            <div className="panel-topline"><span className="assistant-label"><span className="mini-dot" />{agentName(agentVoice)}</span><span className="voice-label">{agentVoice} voice</span></div>
             <div className="voice-stage">
               <div className={`voice-emblem ${active ? 'is-active' : ''} ${voice.activity === 'speaking' && active ? 'is-speaking' : ''}`} aria-hidden="true"><AudioLines strokeWidth={1.3} /></div>
               <h2 aria-live="polite">{status}</h2>
@@ -107,9 +113,16 @@ export default function App() {
           </section>
 
           <section className="transcript-panel" aria-label="Conversation transcript">
-            <div className="transcript-header"><div><h2>Conversation</h2><span>{voice.transcript.length ? `${voice.transcript.length} messages` : 'Your words, as they happen'}</span></div><button className="icon-button" aria-label="Download transcript" title="Download transcript" disabled={!voice.transcript.length} onClick={download}><ArrowDownToLine size={19} /></button></div>
+            <div className="transcript-header"><div><h2>Conversation</h2><span>{conversation.length ? `${conversation.length} entries · order received` : 'Your words, as they happen'}</span></div><button className="icon-button" aria-label="Download transcript" title="Download transcript" disabled={!conversation.length} onClick={download}><ArrowDownToLine size={19} /></button></div>
             <div className="transcript-scroll" ref={transcriptRef} onScroll={(event) => { const element = event.currentTarget; pinnedToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80; }}>
-              {voice.transcript.length ? <div className="messages" role="log" aria-label="Live conversation" aria-live="polite" aria-relevant="additions text">{voice.transcript.map((entry) => <article key={entry.id} className={`message message-${entry.role}`}><div className="message-label">{entry.role === 'user' ? <Mic size={13} /> : <AudioLines size={14} />}<span>{entry.role === 'user' ? 'You' : 'Assistant'}</span>{entry.status === 'incomplete' && <small>Interrupted</small>}</div><p>{entry.text || (entry.status === 'in_progress' ? entry.role === 'user' ? 'Transcribing…' : 'Responding…' : 'No transcript available.')}</p></article>)}</div>
+              {conversation.length ? <div className="messages" role="log" aria-label="Live conversation" aria-live="polite" aria-relevant="additions text">{conversation.map((entry, index) => <article key={entry.id} className={`message message-${entry.role}`}>
+                <div className="message-label"><span>#{index + 1} · {entry.title ?? (entry.role === 'user' ? 'You' : agentName(agentVoice))}</span>
+                  {entry.status === 'in_progress' && entry.role === 'tool' && <small>Pending</small>}
+                  {entry.status === 'incomplete' && <small>{entry.role === 'tool' ? 'No result observed' : 'Interrupted'}</small>}
+                </div>
+                <div className="message-meta">{entry.timestamp?.slice(11, 23)} UTC{entry.callId && ` · ${entry.callId}`}</div>
+                {entry.role === 'tool' ? <pre>{entry.text}</pre> : <p>{entry.text || (entry.status === 'in_progress' ? entry.role === 'user' ? 'Transcribing…' : 'Responding…' : '')}</p>}
+              </article>)}</div>
                 : <div className="empty-transcript"><div className="transcript-illustration" aria-hidden="true"><span /><span /><span /></div><h3>Say hello.</h3><p>{active ? 'Say something or type below. Your conversation will appear here.' : 'Start a conversation and your live transcript will appear here.'}</p></div>}
             </div>
             {<form className="message-form" onSubmit={(event) => { event.preventDefault(); if (draft.trim() && active) { controller.send(draft); setDraft(''); pinnedToBottom.current = true; } }}><label className="sr-only" htmlFor="message">Type a message</label><input id="message" autoComplete="off" value={draft} onChange={(event) => setDraft(event.target.value)} disabled={!active} placeholder={active ? 'Type a message…' : 'Connect to type a message'} maxLength={4000} /><button aria-label="Send message" type="submit" disabled={!active || !draft.trim()}><ArrowUp size={18} /></button></form>}

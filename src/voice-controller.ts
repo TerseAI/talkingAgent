@@ -1,12 +1,16 @@
 import type { RealtimeItem, RealtimeSession } from '@openai/agents/realtime';
-import { AGENT_NAME, AGENT_MODEL, AGENT_VOICE, AGENT_INSTRUCTIONS } from '../shared/agent-config.mjs';
+import { AGENT_MODEL, AGENT_REASONING_EFFORT, AGENT_VOICE, AGENT_INSTRUCTIONS } from '../shared/agent-config.mjs';
 import { counterRequest } from './counter-api';
+import { agentName, agentLabel } from '../shared/agent-identity.mjs';
 import { CounterLock } from './counter-lock';
 
 
 export type TranscriptEntry = {
   id: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'tool' | 'event';
+  timestamp?: string;
+  title?: string;
+  callId?: string;
   text: string;
   status: 'in_progress' | 'completed' | 'incomplete';
 };
@@ -42,11 +46,11 @@ type Dependencies = {
   createAudio: () => HTMLAudioElement;
   createLock?: (clientId: string, signal: AbortSignal) => CounterLock;
   getToken: (signal: AbortSignal) => Promise<string>;
-  createSession: (stream: MediaStream, audio: HTMLAudioElement, clientId: string, signal: AbortSignal, lock?: CounterLock) => Promise<RealtimeSession>;
+  createSession: (stream: MediaStream, audio: HTMLAudioElement, clientId: string, signal: AbortSignal, lock?: CounterLock, voice?: string) => Promise<RealtimeSession>;
 };
 
 const browserDependencies: Dependencies = {
-  createLock: (clientId, signal) => new CounterLock(clientId, signal, new EventSource(`/api/counter/events?clientId=${encodeURIComponent(clientId)}`)),
+  createLock: (clientId, signal) => new CounterLock(clientId, signal),
   getMedia: () => {
     if (!globalThis.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       throw new Error('Microphone access requires localhost or an HTTPS connection in a supported browser.');
@@ -68,24 +72,25 @@ const browserDependencies: Dependencies = {
     }
     return data.value;
   },
-  createSession: async (stream, audio, clientId, signal, lock) => {
+  createSession: async (stream, audio, clientId, signal, lock, voice = AGENT_VOICE) => {
     const { RealtimeAgent, RealtimeSession, OpenAIRealtimeWebRTC } = await import('@openai/agents/realtime');
     const { createCounterTools } = await import('./counter-tools');
     const agent = new RealtimeAgent({
-      name: AGENT_NAME,
+      name: agentName(voice),
       instructions: AGENT_INSTRUCTIONS,
-      tools: createCounterTools(clientId, signal, lock!.claim, counterRequest, lock!.cancel),
+      tools: createCounterTools(clientId, signal, lock!.getTalkingStick, counterRequest),
     });
     return new RealtimeSession(agent, {
       model: AGENT_MODEL,
       transport: new OpenAIRealtimeWebRTC({ mediaStream: stream, audioElement: audio }),
       config: {
+        reasoning: { effort: AGENT_REASONING_EFFORT },
         audio: {
           input: {
             transcription: { model: 'gpt-4o-mini-transcribe' },
             turnDetection: { type: 'semantic_vad', createResponse: true, interruptResponse: true },
           },
-          output: { voice: AGENT_VOICE },
+          output: { voice },
         },
       },
     });
@@ -120,7 +125,18 @@ export class VoiceController {
     this.listeners.forEach((listener) => listener());
   }
 
+  private record(entry: TranscriptEntry) {
+    const transcript = [...this.state.transcript];
+    const index = transcript.findIndex((item) => item.id === entry.id);
+    if (index < 0) transcript.push({ ...entry, timestamp: new Date().toISOString() });
+    else transcript[index] = { ...transcript[index], ...entry };
+    this.update({ transcript });
+  }
+
   private release() {
+    this.update({ transcript: this.state.transcript.map((entry) =>
+      entry.role === 'tool' && entry.status === 'in_progress'
+        ? { ...entry, status: 'incomplete', text: `${entry.text}\nSession ended before a result was observed.` } : entry) });
     this.lock?.cancel();
     this.lock = null;
     this.abort?.abort();
@@ -148,7 +164,7 @@ export class VoiceController {
     this.update({ status: 'error', error: readableError(error), muted: false, playbackBlocked: false });
   }
 
-  start = async () => {
+  start = async (voice = AGENT_VOICE) => {
     if (this.state.status === 'connecting' || this.state.status === 'connected') return;
     this.release();
     const abort = new AbortController();
@@ -177,18 +193,55 @@ export class VoiceController {
       const play = () => { void audio.play().catch(() => { if (current()) this.update({ playbackBlocked: true }); }); };
       audio.addEventListener('canplay', play);
       this.cleanups.push(() => audio.removeEventListener('canplay', play));
-      this.clientId = crypto.randomUUID();
+      this.clientId = `${agentName(voice)}:${crypto.randomUUID()}`;
       this.lock = this.deps.createLock?.(this.clientId, abort.signal) ?? null;
-      const session = await this.deps.createSession(stream, audio, this.clientId, abort.signal, this.lock ?? undefined);
+      const session = await this.deps.createSession(stream, audio, this.clientId, abort.signal, this.lock ?? undefined, voice);
       if (!current()) { session.close(); return; }
       this.session = session;
 
-      session.on('history_updated', (history) => { if (current()) this.update({ transcript: toTranscript(history) }); });
+      const label = agentLabel(this.clientId);
+      session.on('agent_tool_start', (_context, _agent, tool, details) => {
+        if (!current()) return;
+        const call = details.toolCall;
+        const callId = 'callId' in call ? String(call.callId) : crypto.randomUUID();
+        this.record({ id: `started:${callId}`, role: 'tool', callId,
+          title: `${label} · ${tool.name} · Started`,
+          text: 'arguments' in call ? String(call.arguments) : '{}', status: 'in_progress' });
+      });
+      session.on('agent_tool_end', (_context, _agent, tool, result, details) => {
+        if (!current()) return;
+        const callId = 'callId' in details.toolCall ? String(details.toolCall.callId) : crypto.randomUUID();
+        const started = this.state.transcript.find((entry) => entry.id === `started:${callId}`);
+        if (started) this.record({ ...started, status: 'completed' });
+        this.record({ id: `result:${callId}`, role: 'tool', callId,
+          title: `${label} · ${tool.name} · Returned`, text: result, status: 'completed' });
+      });
+      session.on('history_updated', (history) => {
+        if (current()) toTranscript(history).forEach((entry) => this.record(entry));
+      });
       session.on('audio_start', () => { if (current()) this.update({ activity: 'speaking' }); });
       session.on('audio_stopped', () => { if (current()) this.update({ activity: 'listening' }); });
       session.on('audio_interrupted', () => { if (current()) this.update({ activity: 'listening' }); });
       session.on('transport_event', (event) => {
         if (!current()) return;
+        if (event.type === 'response.output_item.added') {
+          const item = event.item as { type?: string; id?: string; call_id?: string; name?: string; arguments?: string; role?: string };
+          if (item.type === 'function_call') {
+            this.record({ id: `generated:${item.call_id}`, role: 'tool', callId: item.call_id,
+              title: `${label} · ${item.name} · Generated`, text: item.arguments || '(Generating arguments)', status: 'completed' });
+          } else if (item.type === 'message' && item.role === 'assistant' && item.id) {
+            this.record({ id: item.id, role: 'assistant', text: '', status: 'in_progress' });
+          }
+        }
+        if (event.type === 'response.function_call_arguments.done') {
+          const entry = this.state.transcript.find((item) => item.id === `generated:${event.call_id}`);
+          if (entry) this.record({ ...entry, text: String(event.arguments) });
+        }
+        if (['output_audio_buffer.started', 'output_audio_buffer.stopped', 'output_audio_buffer.cleared', 'response.done'].includes(event.type)) {
+          const response = ('response' in event ? event.response : undefined) as { id?: string; status?: string } | undefined;
+          this.record({ id: `event:${crypto.randomUUID()}`, role: 'event',
+            title: `${label} · ${event.type}`, text: [('response_id' in event ? event.response_id : undefined) ?? response?.id, response?.status].filter(Boolean).join(' · '), status: 'completed' });
+        }
         if (event.type === 'input_audio_buffer.speech_started') {
           this.update({ activity: 'listening' });
         }

@@ -1,9 +1,9 @@
 import express from 'express';
-import { AGENT_MODEL, AGENT_VOICE } from '../shared/agent-config.mjs';
+import { AGENT_MODEL, AGENT_REASONING_EFFORT, AGENT_VOICE } from '../shared/agent-config.mjs';
 import { sessionOptions } from '../shared/session-options.mjs';
 import { counterRouter } from './counter-routes.mjs';
 
-export function createApp({ apiKey = '', allowedOrigins = [], fetchImpl = fetch, now = Date.now, counter = null } = {}) {
+export function createApp({ apiKey = '', allowedOrigins = [], fetchImpl = fetch, now = Date.now, counter = null, voice = AGENT_VOICE } = {}) {
   const app = express();
   let attempts = [];
   app.disable('x-powered-by');
@@ -22,7 +22,7 @@ export function createApp({ apiKey = '', allowedOrigins = [], fetchImpl = fetch,
   });
 
   app.get('/api/config', (_req, res) => {
-    res.json({ configured: Boolean(apiKey.trim()), model: AGENT_MODEL, voice: AGENT_VOICE });
+    res.json({ configured: Boolean(apiKey.trim()), model: AGENT_MODEL, voice });
   });
   app.use('/api/counter', counterRouter(counter, allowedOrigins));
 
@@ -36,7 +36,10 @@ export function createApp({ apiKey = '', allowedOrigins = [], fetchImpl = fetch,
     }
 
     let options;
-    try { options = sessionOptions(req.body); }
+    try {
+      options = sessionOptions(req.body);
+      if (!req.body?.mode || req.body.mode === 'assistant') options.voice = voice;
+    }
     catch (error) { return res.status(400).json({ error: error.message }); }
 
     const timestamp = now();
@@ -57,6 +60,7 @@ export function createApp({ apiKey = '', allowedOrigins = [], fetchImpl = fetch,
           session: {
             type: 'realtime',
             model: AGENT_MODEL,
+            reasoning: { effort: AGENT_REASONING_EFFORT },
             instructions: options.instructions,
             audio: {
               input: {

@@ -14,6 +14,7 @@ before(async () => {
   const app = createApp({
     get apiKey() { return key; },
     allowedOrigins: [origin],
+    voice: 'cedar',
     now: () => timestamp,
     fetchImpl: (...args) => upstream(...args),
   });
@@ -29,7 +30,7 @@ test('config exposes readiness but never the permanent key', async () => {
   const response = await fetch(`${base}/api/config`);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   const data = await response.json();
-  assert.deepEqual(data, { configured: true, model: 'gpt-realtime-2.1', voice: 'marin' });
+  assert.deepEqual(data, { configured: true, model: 'gpt-realtime-2.1', voice: 'cedar' });
 });
 
 test('rejects foreign and missing origins without contacting OpenAI', async () => {
@@ -44,6 +45,8 @@ test('uses the requested model and only returns a short-lived credential', async
     assert.equal(options.headers.Authorization, `Bearer ${permanentKey}`);
     const body = JSON.parse(options.body);
     assert.equal(body.session.model, 'gpt-realtime-2.1');
+    assert.deepEqual(body.session.reasoning, { effort: 'high' });
+    assert.equal(body.session.audio.output.voice, 'cedar');
     assert.equal(body.expires_after.seconds, 60);
     assert.equal(body.session.audio.input.turn_detection.interrupt_response, true);
     return Response.json({ value: 'ek_ephemeral', expires_at: Math.floor(timestamp / 1000) + 60, session: { private_detail: 'omit me' } });
@@ -90,4 +93,26 @@ test('missing key returns setup instructions', async () => {
     assert.equal(response.status, 503);
     assert.match((await response.json()).error, /\.env/);
   } finally { await new Promise((resolve) => missing.close(resolve)); }
+});
+
+test('accepts named session IDs while preserving identity through counter calls', async () => {
+  const clientId = 'Alice:00000000-0000-4000-8000-000000000001';
+  let received;
+  const named = createApp({
+    allowedOrigins: [origin],
+    counter: { getTalkingStick: async (id) => { received = id; return { status: 'granted', next_number: 1 }; } },
+  }).listen(0, '127.0.0.1');
+  await new Promise((resolve) => named.once('listening', resolve));
+  try {
+    const base = `http://127.0.0.1:${named.address().port}`;
+    const response = await fetch(`${base}/api/counter/claim`, {
+      method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ clientId }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(received, clientId);
+    const invalid = await fetch(`${base}/api/counter/claim`, {
+      method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ clientId: 'Alice' }),
+    });
+    assert.equal(invalid.status, 400);
+  } finally { await new Promise((resolve) => named.close(resolve)); }
 });

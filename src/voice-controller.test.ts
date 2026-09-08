@@ -32,8 +32,9 @@ afterEach(() => vi.useRealTimers());
 
 describe('voice lifecycle', () => {
   it('connects with the ephemeral credential, supports controls, and releases the mic on stop', async () => {
-    const { controller, session, track, audio } = setup();
-    await controller.start();
+    const { controller, dependencies, session, track, audio } = setup();
+    await controller.start('cedar');
+    expect(dependencies.createSession.mock.calls[0][5]).toBe('cedar');
     expect(session.connect).toHaveBeenCalledWith({ apiKey: 'ek_test' });
     expect(controller.getSnapshot().status).toBe('connected');
     expect(track.enabled).toBe(true);
@@ -166,4 +167,39 @@ it('does not cancel a pending lock on microphone speech or a typed message', asy
   controller.interrupt();
   expect(lock.cancel).toHaveBeenCalledOnce();
   controller.stop();
+});
+
+
+describe('diagnostic timeline', () => {
+  it('keeps generated, pending, returned and playback events in arrival order across history updates', async () => {
+    const { controller, session } = setup();
+    await controller.start();
+    const details = { toolCall: { type: 'function_call', callId: 'call_1', name: 'getTalkingStick', arguments: '{}' } };
+    session.emit('transport_event', { type: 'response.output_item.added', item: { type: 'function_call', call_id: 'call_1', name: 'getTalkingStick' } });
+    session.emit('transport_event', { type: 'response.function_call_arguments.done', call_id: 'call_1', arguments: '{}' });
+    session.emit('agent_tool_start', {}, {}, { name: 'getTalkingStick' }, details);
+    expect(controller.getSnapshot().transcript[1].status).toBe('in_progress');
+    const message = { type: 'message', itemId: 'msg_1', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: '1' }] };
+    session.emit('agent_tool_end', {}, {}, { name: 'getTalkingStick' }, '{"next_number":1}', details);
+    session.emit('history_updated', [message]);
+    session.emit('transport_event', { type: 'output_audio_buffer.started', response_id: 'response_1' });
+    session.emit('history_updated', [message]);
+    const entries = controller.getSnapshot().transcript;
+    expect(entries.map((entry) => entry.role)).toEqual(['tool', 'tool', 'tool', 'assistant', 'event']);
+    expect(entries.slice(0, 3).map((entry) => entry.callId)).toEqual(['call_1', 'call_1', 'call_1']);
+    expect(entries[0].text).toBe('{}');
+    expect(entries[1].status).toBe('completed');
+    expect(entries[2].text).toBe('{"next_number":1}');
+    expect(entries[4].title).toContain('output_audio_buffer.started');
+    controller.stop();
+  });
+
+  it('labels an unresolved tool on disconnect without inventing a result', async () => {
+    const { controller, session } = setup();
+    await controller.start();
+    session.emit('agent_tool_start', {}, {}, { name: 'getTalkingStick' }, { toolCall: { callId: 'pending', arguments: '{}' } });
+    controller.stop();
+    expect(controller.getSnapshot().transcript).toHaveLength(1);
+    expect(controller.getSnapshot().transcript[0].status).toBe('incomplete');
+  });
 });
