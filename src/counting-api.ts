@@ -1,12 +1,8 @@
-import type { CountingRoom } from './counting-room';
+import type { z } from 'zod';
+import type { countingSnapshotSchema } from '../shared/counting-protocol.mjs';
 
-export type CountingSnapshot = Awaited<ReturnType<CountingRoom['getSnapshot']>>;
-export type TurnGrantResult =
-  | { status: 'granted'; completedCount: number; numberToSpeak: number; targetCount: 100 }
-  | { status: 'finished'; completedCount: 100; targetCount: 100 }
-  | { status: 'cancelled' };
-export type TurnCompletionResult = { status: 'completed' } | { status: 'cancelled' };
-export type CountResetResult = { status: 'reset' } | { status: 'cancelled' };
+export type CountingSnapshot = z.infer<typeof countingSnapshotSchema>;
+export type CountCommandResult = { status: 'ok' } | { status: 'cancelled' };
 
 export async function fetchCountingSnapshot(signal?: AbortSignal): Promise<CountingSnapshot> {
   const response = await fetch('/api/counting', {

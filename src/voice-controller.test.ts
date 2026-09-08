@@ -15,14 +15,14 @@ function setup() {
   const stream = { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream;
   const audio = Object.assign(new EventTarget(), { play: vi.fn().mockResolvedValue(undefined), pause: vi.fn(), srcObject: null });
   const session = Object.assign(new EventEmitter(), {
-    transport: Object.assign(new EventEmitter(), { requestResponse: vi.fn() }), connect: vi.fn().mockResolvedValue(undefined),
+    transport: Object.assign(new EventEmitter(), { sendEvent: vi.fn() }), connect: vi.fn().mockResolvedValue(undefined),
     close: vi.fn(), mute: vi.fn(), interrupt: vi.fn(), sendMessage: vi.fn(),
   });
   const dependencies = {
     getMedia: vi.fn().mockResolvedValue(stream),
     createAudio: () => audio as unknown as HTMLAudioElement,
     getToken: vi.fn().mockResolvedValue('ek_test'),
-    createCountingConnection: vi.fn(() => ({ close: vi.fn() }) as unknown as import('./counting-connection').CountingConnection),
+    createCountingConnection: vi.fn(() => ({ close: vi.fn(), connect: vi.fn(), completeTurn: vi.fn(), pauseCount: vi.fn().mockResolvedValue({ status: 'ok' }), onStateChanged: null }) as unknown as import('./counting-connection').CountingConnection),
     createSession: vi.fn().mockResolvedValue(session as unknown as RealtimeSession),
   };
   return { controller: new VoiceController(dependencies), dependencies, track, stream, session, audio };
@@ -38,10 +38,10 @@ describe('voice lifecycle', () => {
     expect(session.connect).toHaveBeenCalledWith({ apiKey: 'ek_test' });
     expect(controller.getSnapshot().status).toBe('connected');
     expect(track.enabled).toBe(true);
-    expect(session.transport.requestResponse).not.toHaveBeenCalled();
+    expect(session.transport.sendEvent).not.toHaveBeenCalled();
     expect(session.sendMessage).not.toHaveBeenCalled();
     session.emit('transport_event', { type: 'output_audio_buffer.stopped' });
-    expect(session.transport.requestResponse).not.toHaveBeenCalled();
+    expect(session.transport.sendEvent).not.toHaveBeenCalled();
     controller.toggleMute();
     expect(session.mute).toHaveBeenCalledWith(true);
     controller.send('  hello  ');
@@ -157,18 +157,44 @@ it('combines audio/text transcripts, skips tools, and preserves interrupted turn
   ]);
 });
 
-it('keeps the counting connection open during microphone speech or a typed message', async () => {
+it('joins the room once connected and stays in it through speech, typing, and interruptions', async () => {
   const { controller, dependencies, session } = setup();
   await controller.start();
   const countingConnection = dependencies.createCountingConnection.mock.results[0].value;
+  expect(countingConnection.connect).toHaveBeenCalledOnce();
   session.emit('transport_event', { type: 'input_audio_buffer.speech_started' });
   controller.send('How are you?');
-  expect(countingConnection.close).not.toHaveBeenCalled();
   controller.interrupt();
-  expect(countingConnection.close).toHaveBeenCalledOnce();
+  expect(countingConnection.close).not.toHaveBeenCalled();
   controller.stop();
+  expect(countingConnection.close).toHaveBeenCalledOnce();
 });
 
+it('cues its number into the live session, completes the turn after playback, and closes the mic for others', async () => {
+  const { controller, dependencies, session } = setup();
+  await controller.start('cedar');
+  const countingConnection = dependencies.createCountingConnection.mock.results[0].value;
+  const me = dependencies.createSession.mock.calls[0][2] as string;
+  const state = { nextNumber: 5, completedCount: 4, targetCount: 100, currentSpeakerId: 'someone-else', counting: true, finished: false };
+  countingConnection.onStateChanged!(state, 'turn-a');
+  expect(session.mute).toHaveBeenLastCalledWith(true);
+  expect(controller.getSnapshot().micGated).toBe(true);
+  expect(session.transport.sendEvent).not.toHaveBeenCalled();
+  countingConnection.onStateChanged!({ ...state, currentSpeakerId: me }, 'turn-b');
+  expect(session.mute).toHaveBeenLastCalledWith(false);
+  expect(session.transport.sendEvent).toHaveBeenCalledWith({ type: 'response.create', response: { instructions: expect.stringMatching(/number 5/), metadata: { turnId: 'turn-b' } } });
+  session.emit('transport_event', { type: 'response.created', response: { id: 'resp_5', metadata: { turnId: 'turn-b' } } });
+  session.emit('transport_event', { type: 'response.done', response: { id: 'resp_5', status: 'completed', output: [{ type: 'message' }] } });
+  session.emit('transport_event', { type: 'output_audio_buffer.stopped', response_id: 'resp_5' });
+  expect(countingConnection.completeTurn).toHaveBeenCalledWith('turn-b');
+  countingConnection.onStateChanged!({ ...state, nextNumber: 8, currentSpeakerId: me }, 'turn-c');
+  session.emit('transport_event', { type: 'input_audio_buffer.speech_started' });
+  expect(countingConnection.pauseCount).toHaveBeenCalledOnce();
+  controller.toggleMute();
+  countingConnection.onStateChanged!({ ...state, counting: false, currentSpeakerId: null }, null);
+  expect(session.mute).toHaveBeenLastCalledWith(true);
+  controller.stop();
+});
 
 describe('diagnostic timeline', () => {
   it('keeps generated, pending, returned and playback events in arrival order across history updates', async () => {

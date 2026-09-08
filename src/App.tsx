@@ -109,7 +109,7 @@ export default function App() {
               {voice.playbackBlocked && <button className="enable-audio" onClick={() => void controller.enablePlayback()}><Volume2 size={17} />Enable assistant audio</button>}
             </div>
             {voice.error && <div className="session-error" role="alert"><p>{voice.error}</p></div>}
-            <div className="session-details"><span><Radio size={14} />Voice conversation</span><span>{active && !voice.muted ? 'Microphone on' : 'Microphone off'}</span></div>
+            <div className="session-details"><span><Radio size={14} />Voice conversation</span><span>{!active || voice.muted ? 'Microphone off' : voice.micGated ? 'Microphone paused while another agent counts' : 'Microphone on'}</span></div>
           </section>
 
           <section className="transcript-panel" aria-label="Conversation transcript">

@@ -1,8 +1,9 @@
 import express from 'express';
 import { AGENT_MODEL, AGENT_REASONING_EFFORT, AGENT_VOICE } from '../shared/agent-config.mjs';
 import { sessionOptions } from '../shared/session-options.mjs';
+import { browserLogBatchSchema } from './browser-logs.mjs';
 
-export function createApp({ apiKey = '', allowedOrigins = [], fetchImpl = fetch, now = Date.now, room = null, voice = AGENT_VOICE } = {}) {
+export function createApp({ apiKey = '', allowedOrigins = [], fetchImpl = fetch, now = Date.now, room = null, voice = AGENT_VOICE, writeBrowserLogs = null } = {}) {
   const app = express();
   let attempts = [];
   app.disable('x-powered-by');
@@ -26,6 +27,21 @@ export function createApp({ apiKey = '', allowedOrigins = [], fetchImpl = fetch,
   app.get('/api/counting', async (_req, res) => {
     try { res.json(await room.getSnapshot()); }
     catch { res.status(503).json({ error: 'Start npm run actors, then restart npm run dev.' }); }
+  });
+
+  if (writeBrowserLogs) app.post('/api/browser-logs', (req, res, next) => {
+    if (!allowedOrigins.includes(req.get('origin'))) return res.sendStatus(403);
+    next();
+  }, express.json({ limit: '64kb' }), async (req, res) => {
+    const batch = browserLogBatchSchema.safeParse(req.body);
+    if (!batch.success) return res.status(400).json({ error: 'Invalid browser log batch.' });
+    try {
+      await writeBrowserLogs(batch.data);
+      res.sendStatus(204);
+    } catch (error) {
+      console.error(`Could not save browser logs: ${error.message}`);
+      res.sendStatus(500);
+    }
   });
 
   app.post('/api/session', express.json({ limit: '2kb' }), async (req, res) => {

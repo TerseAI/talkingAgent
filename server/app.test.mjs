@@ -96,12 +96,12 @@ test('missing key returns setup instructions', async () => {
 });
 
 test('serves room state and leaves mutations to the WebSocket', async () => {
-  const state = { nextNumber: 1, completedCount: 0, currentSpeakerId: null, targetCount: 100, finished: false };
-  const counterServer = createApp({ room: { getSnapshot: async () => state } }).listen(0, '127.0.0.1');
-  await new Promise((resolve) => counterServer.once('listening', resolve));
+  const state = { nextNumber: 1, completedCount: 0, currentSpeakerId: null, targetCount: 100, counting: false, finished: false };
+  const countingServer = createApp({ room: { getSnapshot: async () => state } }).listen(0, '127.0.0.1');
+  await new Promise((resolve) => countingServer.once('listening', resolve));
   try {
-    const base = `http://127.0.0.1:${counterServer.address().port}/api/counting`;
+    const base = `http://127.0.0.1:${countingServer.address().port}/api/counting`;
     assert.deepEqual(await (await fetch(base)).json(), state);
     assert.equal((await fetch(`${base}/complete`, { method: 'POST' })).status, 404);
-  } finally { await new Promise((resolve) => counterServer.close(resolve)); }
+  } finally { await new Promise((resolve) => countingServer.close(resolve)); }
 });

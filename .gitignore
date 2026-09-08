@@ -7,6 +7,7 @@ dist/
 .DS_Store
 coverage/
 .qa/
+.logs/
 .counter-data/
 .counter-test-data/
 mobile/.expo/

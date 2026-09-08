@@ -17,3 +17,7 @@ Rules for working in this repo. Keep changes minimal and idiomatic.
 6. **Follow SOLID principles**
 
 7. **Follow TDD.** Add a failing behavior test before production changes, then implement and refactor.
+
+## Browser diagnostics
+
+When investigating a local voice session, inspect the latest `.logs/<startup-time>/` directory first. Development browsers automatically save voice diagnostics and uncaught errors to `Alice-<page-id>.jsonl`, `Bob-<page-id>.jsonl`, and `Charlie-<page-id>.jsonl`. Correlate timestamps, participant IDs, and per-page sequence numbers before asking for exported Chrome logs.

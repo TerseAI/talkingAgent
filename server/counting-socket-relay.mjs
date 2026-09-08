@@ -1,5 +1,5 @@
 import { WebSocket, WebSocketServer } from 'ws';
-import { participantIdSchema } from '../shared/counting-protocol.mjs';
+import { TURN_FALLBACK_MS, participantIdSchema } from '../shared/counting-protocol.mjs';
 
 export function attachCountingSocketRelay(server, room, allowedOrigins) {
   const socketServer = new WebSocketServer({ noServer: true, maxPayload: 2048 });
@@ -34,6 +34,7 @@ function relayParticipantSocket(browserSocket, room, participantId) {
   void room.connect({ participantId }).then((connection) => {
     actorSocket = connection;
     if (browserSocket.readyState !== WebSocket.OPEN) { actorSocket.close(); return; }
+    scheduleTurnFallback(actorSocket, participantId);
     actorSocket.addEventListener('message', (event) => {
       if (browserSocket.readyState === WebSocket.OPEN) browserSocket.send(event.data, { binary: false });
     });
@@ -44,5 +45,31 @@ function relayParticipantSocket(browserSocket, room, participantId) {
       browserSocket.send(JSON.stringify({ type: 'error', message: 'Could not connect to the counting room. Start the actor runtime.' }));
       browserSocket.close(1011, 'Counting room unavailable.');
     }
+  });
+}
+
+function scheduleTurnFallback(actorSocket, participantId) {
+  let turnId = null;
+  let timeout;
+  const clear = () => {
+    clearTimeout(timeout);
+    turnId = null;
+  };
+  actorSocket.addEventListener('close', clear);
+  actorSocket.addEventListener('message', ({ data }) => {
+    let message;
+    try { message = JSON.parse(String(data)); } catch { return; }
+    if (message.type !== 'state_changed') return;
+    const assigned = message.state.currentSpeakerId === participantId ? message.turnId : null;
+    if (assigned === turnId) return;
+    clear();
+    turnId = assigned;
+    if (!assigned) return;
+    // Safety net only: the browser normally completes the turn when its audio playback stops.
+    timeout = setTimeout(() => {
+      if (actorSocket.readyState === WebSocket.OPEN) {
+        actorSocket.send(JSON.stringify({ type: 'expire_turn', turnId: assigned }));
+      }
+    }, TURN_FALLBACK_MS);
   });
 }

@@ -44,7 +44,7 @@ export default function CountingProgress({ snapshot, error, inSession }: {
       <button className="text-button" onClick={() => void reset()} disabled={!snapshot || inSession || resetting}><RotateCcw size={15} />{resetting ? 'Resetting…' : 'Reset count'}</button>
     </div>
     <progress aria-label="Group counting progress" max={100} value={snapshot?.completedCount ?? 0} />
-    <p className="counter-status" role="status">{error ? error : !snapshot ? 'Connecting to the counting room…' : snapshot.finished ? 'The agents have reported 100.' : snapshot.currentSpeakerId ? `${agentLabel(snapshot.currentSpeakerId)} is assigned number ${snapshot.nextNumber}.` : `No speaker is assigned. Next number: ${snapshot.nextNumber}.`}</p>
+    <p className="counter-status" role="status">{error ? error : !snapshot ? 'Connecting to the counting room…' : snapshot.finished ? 'The agents have counted to 100.' : !snapshot.counting ? `Counting is paused. Next number: ${snapshot.nextNumber}.` : snapshot.currentSpeakerId ? `${agentLabel(snapshot.currentSpeakerId)} is saying ${snapshot.nextNumber}.` : `Waiting for a participant to say ${snapshot.nextNumber}.`}</p>
     {resetError && <p role="alert">{resetError}</p>}
   </section>;
 }

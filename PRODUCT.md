@@ -26,8 +26,8 @@ Implement the supplied OpenAI RealtimeAgent / RealtimeSession example as a runna
 - No credentials or real conversation examples were supplied.
 - Assumption: local development is the initial deployment target.
 - Current target: web hosts, each running one independent voice agent. No simulator is needed.
-- Agents coordinate on counting to 100 using one local little-durable-objects actor and the getTalkingStick model tool.
-- The DO stores the next number and holder. One web process serves three ports and owns a FIFO queue of pending HTTP tool requests; completion directly resolves the next waiter. No coordination sockets or polling. Model-selected tools claim, complete, and release turns; completion records an agent report, not verified playback.
+- Agents share one count through the `CountingRoom` actor. The model's only counting decisions are `start_counting` and `pause_counting`. The room rotates turns round-robin over connected participants and broadcasts each assignment.
+- The browser drives the live session: on its turn it sends `response.create` telling the model to say only its number, and reports `complete_turn` when audio playback stops. The relay expires a turn after eight seconds only as a fallback. Non-speaking agents close their microphone while the count runs so they do not answer each other. Speaking to the current speaker pauses the count at that speaker and reopens every microphone; `start_counting` resumes with the same participant and number.
 - One normal voice session with microphone input and interruptions. Count only when asked; no forced response loop or separate counting mode.
 
 ## Product Principles

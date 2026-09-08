@@ -2,6 +2,8 @@ import type { RealtimeItem, RealtimeSession } from '@openai/agents/realtime';
 import { AGENT_MODEL, AGENT_REASONING_EFFORT, AGENT_VOICE, AGENT_INSTRUCTIONS } from '../shared/agent-config.mjs';
 import { agentName, agentLabel } from '../shared/agent-identity.mjs';
 import { CountingConnection } from './counting-connection';
+import { CountingTurnDriver } from './counting-turns';
+import { logVoiceEvent, logRealtimeEvent, observeAudioPlayback } from './voice-diagnostics';
 
 
 export type TranscriptEntry = {
@@ -17,6 +19,8 @@ export type VoiceState = {
   status: 'idle' | 'connecting' | 'connected' | 'ended' | 'error';
   activity: 'listening' | 'thinking' | 'speaking';
   muted: boolean;
+  /** True while another agent holds the counting turn and this mic is closed to it. */
+  micGated: boolean;
   playbackBlocked: boolean;
   error: string | null;
   transcript: TranscriptEntry[];
@@ -98,7 +102,7 @@ const browserDependencies: Dependencies = {
 
 export class VoiceController {
   private state: VoiceState = {
-    status: 'idle', activity: 'listening', muted: false, playbackBlocked: false,
+    status: 'idle', activity: 'listening', muted: false, micGated: false, playbackBlocked: false,
     error: null, transcript: [],
   };
   private listeners = new Set<() => void>();
@@ -110,6 +114,7 @@ export class VoiceController {
   private cleanups: (() => void)[] = [];
   private participantId: string | null = null;
   private countingConnection: CountingConnection | null = null;
+  private turnDriver: CountingTurnDriver | null = null;
 
   constructor(private deps: Dependencies = browserDependencies) {}
 
@@ -133,11 +138,13 @@ export class VoiceController {
   }
 
   private release() {
+    if (this.participantId) logVoiceEvent(this.participantId, 'session.release');
     this.update({ transcript: this.state.transcript.map((entry) =>
       entry.role === 'tool' && entry.status === 'in_progress'
         ? { ...entry, status: 'incomplete', text: `${entry.text}\nSession ended before a result was observed.` } : entry) });
     this.countingConnection?.close();
     this.countingConnection = null;
+    this.turnDriver = null;
     this.abort?.abort();
     this.abort = null;
     this.participantId = null;
@@ -158,8 +165,9 @@ export class VoiceController {
   }
 
   private fail(error: unknown) {
+    logVoiceEvent(this.participantId, 'session.failed', { message: readableError(error) });
     this.release();
-    this.update({ status: 'error', error: readableError(error), muted: false, playbackBlocked: false });
+    this.update({ status: 'error', error: readableError(error), muted: false, micGated: false, playbackBlocked: false });
   }
 
   start = async (voice = AGENT_VOICE) => {
@@ -168,7 +176,7 @@ export class VoiceController {
     const abort = new AbortController();
     const current = () => !abort.signal.aborted;
     this.abort = abort;
-    this.update({ status: 'connecting', error: null, transcript: [], activity: 'listening', muted: false, playbackBlocked: false });
+    this.update({ status: 'connecting', error: null, transcript: [], activity: 'listening', muted: false, micGated: false, playbackBlocked: false });
     this.timeout = setTimeout(() => {
       if (current()) this.fail(new Error('The connection timed out. Check microphone permission and your internet connection, then try again.'));
     }, 30_000);
@@ -188,20 +196,33 @@ export class VoiceController {
       if (!current()) return;
       const audio = this.deps.createAudio();
       this.audio = audio;
-      const play = () => { void audio.play().catch(() => { if (current()) this.update({ playbackBlocked: true }); }); };
+      const play = () => {
+        logVoiceEvent(this.participantId, 'audio_element.play_requested');
+        void audio.play().catch((error) => {
+          if (current()) {
+            logVoiceEvent(this.participantId, 'audio_element.play_rejected', { message: readableError(error) });
+            this.update({ playbackBlocked: true });
+          }
+        });
+      };
       audio.addEventListener('canplay', play);
       this.cleanups.push(() => audio.removeEventListener('canplay', play));
       this.participantId = `${agentName(voice)}:${crypto.randomUUID()}`;
+      const participantId = this.participantId;
+      logVoiceEvent(participantId, 'session.start', { voice, model: AGENT_MODEL });
+      this.cleanups.push(observeAudioPlayback(participantId, audio));
       this.countingConnection = this.deps.createCountingConnection?.(this.participantId, abort.signal) ?? null;
       const session = await this.deps.createSession(stream, audio, this.participantId, abort.signal, this.countingConnection ?? undefined, voice);
       if (!current()) { session.close(); return; }
       this.session = session;
+      this.turnDriver = this.createTurnDriver(participantId, session);
 
       const label = agentLabel(this.participantId);
       session.on('agent_tool_start', (_context, _agent, tool, details) => {
         if (!current()) return;
         const call = details.toolCall;
         const callId = 'callId' in call ? String(call.callId) : crypto.randomUUID();
+        logVoiceEvent(participantId, 'tool.started', { tool: tool.name, callId, responseId: 'responseId' in call ? call.responseId : undefined });
         this.record({ id: `started:${callId}`, role: 'tool', callId,
           title: `${label} · ${tool.name} · Started`,
           text: 'arguments' in call ? String(call.arguments) : '{}', status: 'in_progress' });
@@ -209,6 +230,7 @@ export class VoiceController {
       session.on('agent_tool_end', (_context, _agent, tool, result, details) => {
         if (!current()) return;
         const callId = 'callId' in details.toolCall ? String(details.toolCall.callId) : crypto.randomUUID();
+        logVoiceEvent(participantId, 'tool.returned', { tool: tool.name, callId, result });
         const started = this.state.transcript.find((entry) => entry.id === `started:${callId}`);
         if (started) this.record({ ...started, status: 'completed' });
         this.record({ id: `result:${callId}`, role: 'tool', callId,
@@ -217,11 +239,13 @@ export class VoiceController {
       session.on('history_updated', (history) => {
         if (current()) toTranscript(history).forEach((entry) => this.record(entry));
       });
-      session.on('audio_start', () => { if (current()) this.update({ activity: 'speaking' }); });
-      session.on('audio_stopped', () => { if (current()) this.update({ activity: 'listening' }); });
-      session.on('audio_interrupted', () => { if (current()) this.update({ activity: 'listening' }); });
+      session.on('audio_start', () => { if (current()) { logVoiceEvent(participantId, 'session.audio_start'); this.update({ activity: 'speaking' }); } });
+      session.on('audio_stopped', () => { if (current()) { logVoiceEvent(participantId, 'session.audio_stopped'); this.update({ activity: 'listening' }); } });
+      session.on('audio_interrupted', () => { if (current()) { logVoiceEvent(participantId, 'session.audio_interrupted'); this.update({ activity: 'listening' }); } });
       session.on('transport_event', (event) => {
         if (!current()) return;
+        logRealtimeEvent(participantId, event, audio);
+        this.turnDriver?.onTransportEvent(event as { type: string });
         if (event.type === 'response.output_item.added') {
           const item = event.item as { type?: string; id?: string; call_id?: string; name?: string; arguments?: string; role?: string };
           if (item.type === 'function_call') {
@@ -253,6 +277,7 @@ export class VoiceController {
         if (current()) this.fail(new Error('OpenAI reported a session error. Check your API access and usage limits, then start a new conversation.'));
       });
       const connectionChanged = (status: string) => {
+        if (current()) logVoiceEvent(participantId, 'session.connection_changed', { status });
         if (current() && status === 'disconnected') this.fail(new Error('The voice connection closed. Check your internet connection and start a new conversation.'));
       };
       session.transport.on('connection_change', connectionChanged);
@@ -267,33 +292,52 @@ export class VoiceController {
       this.timeout = null;
       stream.getAudioTracks().forEach((track) => { track.enabled = true; });
       this.update({ status: 'connected' });
+      logVoiceEvent(participantId, 'session.connected');
+      this.countingConnection?.connect();
     } catch (error) {
       if (current()) this.fail(error);
     }
   };
 
-  private leaveCountingRoom() {
-    this.countingConnection?.close();
+  private createTurnDriver(participantId: string, session: RealtimeSession) {
+    const connection = this.countingConnection;
+    if (!connection) return null;
+    const driver = new CountingTurnDriver(participantId, {
+      requestResponse: (instructions, turnId) => session.transport.sendEvent({ type: 'response.create', response: { instructions, metadata: { turnId } } }),
+      completeTurn: connection.completeTurn,
+      pauseCount: () => { connection.pauseCount().catch(() => {}); },
+      setListening: (listening) => {
+        if (this.state.micGated !== !listening) { this.update({ micGated: !listening }); this.applyMute(); }
+      },
+    }, (event, details) => logVoiceEvent(participantId, event, details));
+    connection.onStateChanged = (state, turnId) => { if (this.session === session) driver.onState(state, turnId); };
+    return driver;
+  }
+
+  private applyMute() {
+    this.session?.mute(this.state.muted || this.state.micGated);
   }
 
   stop = () => {
     this.release();
-    this.update({ status: 'ended', muted: false, playbackBlocked: false });
+    this.update({ status: 'ended', muted: false, micGated: false, playbackBlocked: false });
   };
   toggleMute = () => {
     if (this.state.status !== 'connected' || !this.session) return;
     const muted = !this.state.muted;
-    this.session.mute(muted);
+    logVoiceEvent(this.participantId, 'microphone.mute_requested', { muted });
     this.update({ muted });
+    this.applyMute();
   };
   interrupt = () => {
     if (this.state.status !== 'connected') return;
-    this.leaveCountingRoom();
+    logVoiceEvent(this.participantId, 'session.interrupt_requested');
     this.session?.interrupt();
     this.update({ activity: 'listening' });
   };
   send = (text: string) => {
     if (!text.trim() || this.state.status !== 'connected' || !this.session) return;
+    logVoiceEvent(this.participantId, 'user.text_sent', { text: text.trim() });
     try {
       this.session.sendMessage(text.trim());
       this.update({ activity: 'thinking' });
@@ -301,10 +345,13 @@ export class VoiceController {
   };
   enablePlayback = async () => {
     const audio = this.audio;
+    logVoiceEvent(this.participantId, 'audio_element.enable_requested');
     try {
       await audio?.play();
       if (audio && audio === this.audio) this.update({ playbackBlocked: false });
-    } catch { /* Keep the enable-audio button available for another user gesture. */ }
+    } catch (error) {
+      logVoiceEvent(this.participantId, 'audio_element.enable_rejected', { message: readableError(error) });
+    }
   };
   dispose = () => { this.release(); };
 }
