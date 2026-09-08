@@ -22,7 +22,7 @@ function setup() {
     getMedia: vi.fn().mockResolvedValue(stream),
     createAudio: () => audio as unknown as HTMLAudioElement,
     getToken: vi.fn().mockResolvedValue('ek_test'),
-    createLock: vi.fn(() => ({ cancel: vi.fn() }) as unknown as import('./counter-lock').CounterLock),
+    createCountingConnection: vi.fn(() => ({ close: vi.fn() }) as unknown as import('./counting-connection').CountingConnection),
     createSession: vi.fn().mockResolvedValue(session as unknown as RealtimeSession),
   };
   return { controller: new VoiceController(dependencies), dependencies, track, stream, session, audio };
@@ -157,15 +157,15 @@ it('combines audio/text transcripts, skips tools, and preserves interrupted turn
   ]);
 });
 
-it('does not cancel a pending lock on microphone speech or a typed message', async () => {
+it('keeps the counting connection open during microphone speech or a typed message', async () => {
   const { controller, dependencies, session } = setup();
   await controller.start();
-  const lock = dependencies.createLock.mock.results[0].value;
+  const countingConnection = dependencies.createCountingConnection.mock.results[0].value;
   session.emit('transport_event', { type: 'input_audio_buffer.speech_started' });
   controller.send('How are you?');
-  expect(lock.cancel).not.toHaveBeenCalled();
+  expect(countingConnection.close).not.toHaveBeenCalled();
   controller.interrupt();
-  expect(lock.cancel).toHaveBeenCalledOnce();
+  expect(countingConnection.close).toHaveBeenCalledOnce();
   controller.stop();
 });
 
@@ -174,13 +174,13 @@ describe('diagnostic timeline', () => {
   it('keeps generated, pending, returned and playback events in arrival order across history updates', async () => {
     const { controller, session } = setup();
     await controller.start();
-    const details = { toolCall: { type: 'function_call', callId: 'call_1', name: 'getTalkingStick', arguments: '{}' } };
-    session.emit('transport_event', { type: 'response.output_item.added', item: { type: 'function_call', call_id: 'call_1', name: 'getTalkingStick' } });
+    const details = { toolCall: { type: 'function_call', callId: 'call_1', name: 'wait_for_turn', arguments: '{}' } };
+    session.emit('transport_event', { type: 'response.output_item.added', item: { type: 'function_call', call_id: 'call_1', name: 'wait_for_turn' } });
     session.emit('transport_event', { type: 'response.function_call_arguments.done', call_id: 'call_1', arguments: '{}' });
-    session.emit('agent_tool_start', {}, {}, { name: 'getTalkingStick' }, details);
+    session.emit('agent_tool_start', {}, {}, { name: 'wait_for_turn' }, details);
     expect(controller.getSnapshot().transcript[1].status).toBe('in_progress');
     const message = { type: 'message', itemId: 'msg_1', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: '1' }] };
-    session.emit('agent_tool_end', {}, {}, { name: 'getTalkingStick' }, '{"next_number":1}', details);
+    session.emit('agent_tool_end', {}, {}, { name: 'wait_for_turn' }, '{"numberToSpeak":1}', details);
     session.emit('history_updated', [message]);
     session.emit('transport_event', { type: 'output_audio_buffer.started', response_id: 'response_1' });
     session.emit('history_updated', [message]);
@@ -189,7 +189,7 @@ describe('diagnostic timeline', () => {
     expect(entries.slice(0, 3).map((entry) => entry.callId)).toEqual(['call_1', 'call_1', 'call_1']);
     expect(entries[0].text).toBe('{}');
     expect(entries[1].status).toBe('completed');
-    expect(entries[2].text).toBe('{"next_number":1}');
+    expect(entries[2].text).toBe('{"numberToSpeak":1}');
     expect(entries[4].title).toContain('output_audio_buffer.started');
     controller.stop();
   });
@@ -197,7 +197,7 @@ describe('diagnostic timeline', () => {
   it('labels an unresolved tool on disconnect without inventing a result', async () => {
     const { controller, session } = setup();
     await controller.start();
-    session.emit('agent_tool_start', {}, {}, { name: 'getTalkingStick' }, { toolCall: { callId: 'pending', arguments: '{}' } });
+    session.emit('agent_tool_start', {}, {}, { name: 'wait_for_turn' }, { toolCall: { callId: 'pending', arguments: '{}' } });
     controller.stop();
     expect(controller.getSnapshot().transcript).toHaveLength(1);
     expect(controller.getSnapshot().transcript[0].status).toBe('incomplete');

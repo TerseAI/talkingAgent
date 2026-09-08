@@ -2,24 +2,25 @@ import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { createApp } from './app.mjs';
-import { TurnCoordinator } from './turn-coordinator.mjs';
-import { Counter } from '../src/durable-objects.ts';
+import { attachCountingSocketRelay } from './counting-socket-relay.mjs';
+import { CountingRoom } from '../src/counting-room.ts';
 
-const ports = [3002, 3003, 3004];
-if (process.env.PORT && process.env.PORT !== '3002') throw new Error('Run npm run dev once; it serves ports 3002, 3003, and 3004 together.');
+const ports = process.env.PORT ? [Number(process.env.PORT)] : [3002, 3003, 3004];
 const host = process.env.HOST || '127.0.0.1';
-const counterId = process.env.COUNTER_ID || 'voice-count-to-100';
-const counter = new TurnCoordinator(Counter.get(counterId));
+const roomId = process.env.COUNTING_ROOM_ID || 'voice-count-to-100';
+const room = CountingRoom.get(roomId);
 const hosts = [];
 for (const port of ports) {
+  const allowedOrigins = [`http://localhost:${port}`, `http://127.0.0.1:${port}`];
   const app = createApp({
-    counter,
+    room,
     voice: ({ 3002: 'marin', 3003: 'cedar', 3004: 'coral' })[port] ?? 'marin',
     apiKey: process.env.OPENAI_API_KEY,
-    allowedOrigins: [`http://localhost:${port}`, `http://127.0.0.1:${port}`],
+    allowedOrigins,
   });
 
   const server = createServer(app);
+  const socketRelay = attachCountingSocketRelay(server, room, allowedOrigins);
   let vite;
   if (process.env.NODE_ENV === 'production') {
     const dist = fileURLToPath(new URL('../dist/', import.meta.url));
@@ -42,13 +43,13 @@ for (const port of ports) {
       : 'Add OPENAI_API_KEY to .env and restart to enable voice conversations.');
   });
 
-  hosts.push({ server, vite });
+  hosts.push({ server, vite, socketRelay });
 }
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, async () => {
-    await counter.close().catch((error) => console.error('Could not release the counter:', error.message));
-    await Promise.all(hosts.map(async ({ server, vite }) => {
+    await Promise.all(hosts.map(async ({ server, vite, socketRelay }) => {
+      await socketRelay.close();
       await vite?.close();
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));

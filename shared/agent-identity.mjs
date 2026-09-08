@@ -8,6 +8,6 @@ export function agentLabel(id) {
   return session ? `${name} (${session.slice(0, 8)})` : `Agent ${id.slice(0, 8)}`;
 }
 
-export function logCounter(event, agentId, detail = '') {
-  console.info(`[${new Date().toISOString()}] [counter] ${agentLabel(agentId)} ${event}${detail ? ` | ${detail}` : ''}`);
+export function logCountingEvent(event, agentId, detail = '') {
+  console.info(`[${new Date().toISOString()}] [counting] ${agentLabel(agentId)} ${event}${detail ? ` | ${detail}` : ''}`);
 }

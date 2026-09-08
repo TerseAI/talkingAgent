@@ -12,8 +12,8 @@
     "start": "NODE_ENV=production npm run dev",
     "test": "vitest run && node --test server/*.test.mjs",
     "typecheck": "tsc -b",
-    "counter": "node --env-file-if-exists=.env node_modules/little-durable-objects/dist/cli.js dev --entrypoint src/durable-objects.ts --port 7110 --data-dir .counter-data",
-    "test:counter:live": "little-durable-objects run --data-dir .counter-data scripts/counter-integration.mjs"
+    "actors": "node --env-file-if-exists=.env node_modules/little-durable-objects/dist/cli.js dev --entrypoint src/counting-room.ts --port 7110 --data-dir .counter-data",
+    "test:counting:live": "little-durable-objects run --data-dir .counter-data scripts/counting-integration.mjs"
   },
   "dependencies": {
     "@fontsource-variable/manrope": "^5.3.0",
@@ -23,6 +23,7 @@
     "lucide-react": "^1.42.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "ws": "^8.21.3",
     "zod": "^4.5.4"
   },
   "devDependencies": {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ArrowDownToLine, ArrowUp, AudioLines, Check, ChevronRight, CircleHelp, LoaderCircle, Mic, MicOff, Radio, RotateCcw, Square, Volume2, X } from 'lucide-react';
 import { VoiceController } from './voice-controller';
-import SharedCounter, { useSharedCounter } from './SharedCounter';
+import CountingProgress, { useCountingSnapshot } from './CountingProgress';
 import { agentName } from '../shared/agent-identity.mjs';
 import { AGENT_MODEL, AGENT_VOICE } from '../shared/agent-config.mjs';
 
@@ -14,7 +14,7 @@ export default function App() {
   const [agentVoice, setAgentVoice] = useState<string>(AGENT_VOICE);
   const [showHelp, setShowHelp] = useState(false);
   const [draft, setDraft] = useState('');
-  const { snapshot: counter, error: counterError } = useSharedCounter();
+  const { snapshot: countingSnapshot, error: countingError } = useCountingSnapshot();
   const transcriptRef = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
   const configRequest = useRef<AbortController | null>(null);
@@ -82,7 +82,7 @@ export default function App() {
 
       <main>
         <div className="page-intro"><h1>Talk to your agent.</h1><p>Ask a question, or ask it to count with the other agents.</p></div>
-        <SharedCounter snapshot={counter} error={counterError} inSession={inSession} />
+        <CountingProgress snapshot={countingSnapshot} error={countingError} inSession={inSession} />
         <p className="counting-hint">Counting starts when you ask. You can interrupt and talk anytime.</p>
 
         {showHelp && <section id="help-panel" className="help-panel"><h2>Voice conversation</h2><p>Allow microphone access and speak normally. You can interrupt, mute your microphone, or type a message. Each tab has its own agent; their counter is shared.</p><p>The count reflects numbers reported by the agents, not verified audio playback. Audio is sent to OpenAI during a call. The transcript stays in this page until you reload.</p><a href="https://developers.openai.com/api/docs/guides/voice-agents" target="_blank" rel="noreferrer">OpenAI voice agent documentation <ChevronRight size={15} /></a></section>}

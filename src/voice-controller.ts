@@ -1,8 +1,7 @@
 import type { RealtimeItem, RealtimeSession } from '@openai/agents/realtime';
 import { AGENT_MODEL, AGENT_REASONING_EFFORT, AGENT_VOICE, AGENT_INSTRUCTIONS } from '../shared/agent-config.mjs';
-import { counterRequest } from './counter-api';
 import { agentName, agentLabel } from '../shared/agent-identity.mjs';
-import { CounterLock } from './counter-lock';
+import { CountingConnection } from './counting-connection';
 
 
 export type TranscriptEntry = {
@@ -44,13 +43,13 @@ function readableError(error: unknown): string {
 type Dependencies = {
   getMedia: () => Promise<MediaStream>;
   createAudio: () => HTMLAudioElement;
-  createLock?: (clientId: string, signal: AbortSignal) => CounterLock;
+  createCountingConnection?: (participantId: string, signal: AbortSignal) => CountingConnection;
   getToken: (signal: AbortSignal) => Promise<string>;
-  createSession: (stream: MediaStream, audio: HTMLAudioElement, clientId: string, signal: AbortSignal, lock?: CounterLock, voice?: string) => Promise<RealtimeSession>;
+  createSession: (stream: MediaStream, audio: HTMLAudioElement, participantId: string, signal: AbortSignal, countingConnection?: CountingConnection, voice?: string) => Promise<RealtimeSession>;
 };
 
 const browserDependencies: Dependencies = {
-  createLock: (clientId, signal) => new CounterLock(clientId, signal),
+  createCountingConnection: (participantId, signal) => new CountingConnection(participantId, signal),
   getMedia: () => {
     if (!globalThis.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       throw new Error('Microphone access requires localhost or an HTTPS connection in a supported browser.');
@@ -72,13 +71,13 @@ const browserDependencies: Dependencies = {
     }
     return data.value;
   },
-  createSession: async (stream, audio, clientId, signal, lock, voice = AGENT_VOICE) => {
+  createSession: async (stream, audio, participantId, signal, countingConnection, voice = AGENT_VOICE) => {
     const { RealtimeAgent, RealtimeSession, OpenAIRealtimeWebRTC } = await import('@openai/agents/realtime');
-    const { createCounterTools } = await import('./counter-tools');
+    const { createCountingTools } = await import('./counting-tools');
     const agent = new RealtimeAgent({
       name: agentName(voice),
       instructions: AGENT_INSTRUCTIONS,
-      tools: createCounterTools(clientId, signal, lock!.getTalkingStick, counterRequest),
+      tools: createCountingTools(countingConnection!),
     });
     return new RealtimeSession(agent, {
       model: AGENT_MODEL,
@@ -109,8 +108,8 @@ export class VoiceController {
   private abort: AbortController | null = null;
   private timeout: ReturnType<typeof setTimeout> | null = null;
   private cleanups: (() => void)[] = [];
-  private clientId: string | null = null;
-  private lock: CounterLock | null = null;
+  private participantId: string | null = null;
+  private countingConnection: CountingConnection | null = null;
 
   constructor(private deps: Dependencies = browserDependencies) {}
 
@@ -137,12 +136,11 @@ export class VoiceController {
     this.update({ transcript: this.state.transcript.map((entry) =>
       entry.role === 'tool' && entry.status === 'in_progress'
         ? { ...entry, status: 'incomplete', text: `${entry.text}\nSession ended before a result was observed.` } : entry) });
-    this.lock?.cancel();
-    this.lock = null;
+    this.countingConnection?.close();
+    this.countingConnection = null;
     this.abort?.abort();
     this.abort = null;
-    if (this.clientId) void counterRequest('cancel', { clientId: this.clientId }).catch(() => {});
-    this.clientId = null;
+    this.participantId = null;
     if (this.timeout) clearTimeout(this.timeout);
     this.timeout = null;
     this.cleanups.splice(0).forEach((cleanup) => cleanup());
@@ -193,13 +191,13 @@ export class VoiceController {
       const play = () => { void audio.play().catch(() => { if (current()) this.update({ playbackBlocked: true }); }); };
       audio.addEventListener('canplay', play);
       this.cleanups.push(() => audio.removeEventListener('canplay', play));
-      this.clientId = `${agentName(voice)}:${crypto.randomUUID()}`;
-      this.lock = this.deps.createLock?.(this.clientId, abort.signal) ?? null;
-      const session = await this.deps.createSession(stream, audio, this.clientId, abort.signal, this.lock ?? undefined, voice);
+      this.participantId = `${agentName(voice)}:${crypto.randomUUID()}`;
+      this.countingConnection = this.deps.createCountingConnection?.(this.participantId, abort.signal) ?? null;
+      const session = await this.deps.createSession(stream, audio, this.participantId, abort.signal, this.countingConnection ?? undefined, voice);
       if (!current()) { session.close(); return; }
       this.session = session;
 
-      const label = agentLabel(this.clientId);
+      const label = agentLabel(this.participantId);
       session.on('agent_tool_start', (_context, _agent, tool, details) => {
         if (!current()) return;
         const call = details.toolCall;
@@ -274,9 +272,8 @@ export class VoiceController {
     }
   };
 
-  private cancelTurn() {
-    this.lock?.cancel();
-    if (this.clientId) void counterRequest('cancel', { clientId: this.clientId }).catch(() => {});
+  private leaveCountingRoom() {
+    this.countingConnection?.close();
   }
 
   stop = () => {
@@ -291,7 +288,7 @@ export class VoiceController {
   };
   interrupt = () => {
     if (this.state.status !== 'connected') return;
-    this.cancelTurn();
+    this.leaveCountingRoom();
     this.session?.interrupt();
     this.update({ activity: 'listening' });
   };

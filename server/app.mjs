@@ -1,9 +1,8 @@
 import express from 'express';
 import { AGENT_MODEL, AGENT_REASONING_EFFORT, AGENT_VOICE } from '../shared/agent-config.mjs';
 import { sessionOptions } from '../shared/session-options.mjs';
-import { counterRouter } from './counter-routes.mjs';
 
-export function createApp({ apiKey = '', allowedOrigins = [], fetchImpl = fetch, now = Date.now, counter = null, voice = AGENT_VOICE } = {}) {
+export function createApp({ apiKey = '', allowedOrigins = [], fetchImpl = fetch, now = Date.now, room = null, voice = AGENT_VOICE } = {}) {
   const app = express();
   let attempts = [];
   app.disable('x-powered-by');
@@ -24,7 +23,10 @@ export function createApp({ apiKey = '', allowedOrigins = [], fetchImpl = fetch,
   app.get('/api/config', (_req, res) => {
     res.json({ configured: Boolean(apiKey.trim()), model: AGENT_MODEL, voice });
   });
-  app.use('/api/counter', counterRouter(counter, allowedOrigins));
+  app.get('/api/counting', async (_req, res) => {
+    try { res.json(await room.getSnapshot()); }
+    catch { res.status(503).json({ error: 'Start npm run actors, then restart npm run dev.' }); }
+  });
 
   app.post('/api/session', express.json({ limit: '2kb' }), async (req, res) => {
     // Fixed origins protect the local credential endpoint from requests by other websites.

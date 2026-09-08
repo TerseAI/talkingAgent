@@ -95,24 +95,13 @@ test('missing key returns setup instructions', async () => {
   } finally { await new Promise((resolve) => missing.close(resolve)); }
 });
 
-test('accepts named session IDs while preserving identity through counter calls', async () => {
-  const clientId = 'Alice:00000000-0000-4000-8000-000000000001';
-  let received;
-  const named = createApp({
-    allowedOrigins: [origin],
-    counter: { getTalkingStick: async (id) => { received = id; return { status: 'granted', next_number: 1 }; } },
-  }).listen(0, '127.0.0.1');
-  await new Promise((resolve) => named.once('listening', resolve));
+test('serves room state and leaves mutations to the WebSocket', async () => {
+  const state = { nextNumber: 1, completedCount: 0, currentSpeakerId: null, targetCount: 100, finished: false };
+  const counterServer = createApp({ room: { getSnapshot: async () => state } }).listen(0, '127.0.0.1');
+  await new Promise((resolve) => counterServer.once('listening', resolve));
   try {
-    const base = `http://127.0.0.1:${named.address().port}`;
-    const response = await fetch(`${base}/api/counter/claim`, {
-      method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ clientId }),
-    });
-    assert.equal(response.status, 200);
-    assert.equal(received, clientId);
-    const invalid = await fetch(`${base}/api/counter/claim`, {
-      method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ clientId: 'Alice' }),
-    });
-    assert.equal(invalid.status, 400);
-  } finally { await new Promise((resolve) => named.close(resolve)); }
+    const base = `http://127.0.0.1:${counterServer.address().port}/api/counting`;
+    assert.deepEqual(await (await fetch(base)).json(), state);
+    assert.equal((await fetch(`${base}/complete`, { method: 'POST' })).status, 404);
+  } finally { await new Promise((resolve) => counterServer.close(resolve)); }
 });
