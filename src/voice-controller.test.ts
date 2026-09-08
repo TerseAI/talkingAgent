@@ -15,13 +15,14 @@ function setup() {
   const stream = { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream;
   const audio = Object.assign(new EventTarget(), { play: vi.fn().mockResolvedValue(undefined), pause: vi.fn(), srcObject: null });
   const session = Object.assign(new EventEmitter(), {
-    transport: new EventEmitter(), connect: vi.fn().mockResolvedValue(undefined),
+    transport: Object.assign(new EventEmitter(), { requestResponse: vi.fn() }), connect: vi.fn().mockResolvedValue(undefined),
     close: vi.fn(), mute: vi.fn(), interrupt: vi.fn(), sendMessage: vi.fn(),
   });
   const dependencies = {
     getMedia: vi.fn().mockResolvedValue(stream),
     createAudio: () => audio as unknown as HTMLAudioElement,
     getToken: vi.fn().mockResolvedValue('ek_test'),
+    createLock: vi.fn(() => ({ cancel: vi.fn() }) as unknown as import('./counter-lock').CounterLock),
     createSession: vi.fn().mockResolvedValue(session as unknown as RealtimeSession),
   };
   return { controller: new VoiceController(dependencies), dependencies, track, stream, session, audio };
@@ -36,6 +37,10 @@ describe('voice lifecycle', () => {
     expect(session.connect).toHaveBeenCalledWith({ apiKey: 'ek_test' });
     expect(controller.getSnapshot().status).toBe('connected');
     expect(track.enabled).toBe(true);
+    expect(session.transport.requestResponse).not.toHaveBeenCalled();
+    expect(session.sendMessage).not.toHaveBeenCalled();
+    session.emit('transport_event', { type: 'output_audio_buffer.stopped' });
+    expect(session.transport.requestResponse).not.toHaveBeenCalled();
     controller.toggleMute();
     expect(session.mute).toHaveBeenCalledWith(true);
     controller.send('  hello  ');
@@ -149,4 +154,16 @@ it('combines audio/text transcripts, skips tools, and preserves interrupted turn
     { id: '1', role: 'user', text: 'Hello', status: 'completed' },
     { id: '2', role: 'assistant', text: 'Hi there', status: 'incomplete' },
   ]);
+});
+
+it('does not cancel a pending lock on microphone speech or a typed message', async () => {
+  const { controller, dependencies, session } = setup();
+  await controller.start();
+  const lock = dependencies.createLock.mock.results[0].value;
+  session.emit('transport_event', { type: 'input_audio_buffer.speech_started' });
+  controller.send('How are you?');
+  expect(lock.cancel).not.toHaveBeenCalled();
+  controller.interrupt();
+  expect(lock.cancel).toHaveBeenCalledOnce();
+  controller.stop();
 });

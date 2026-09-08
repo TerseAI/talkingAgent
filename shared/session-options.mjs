@@ -1,14 +1,13 @@
-import { AGENT_INSTRUCTIONS, AGENT_VOICE, COUNTING_INSTRUCTIONS } from './agent-config.mjs';
+import { AGENT_INSTRUCTIONS, AGENT_VOICE } from './agent-config.mjs';
 
 /** Each request creates an independent voice session; counting tools share an actor. */
 export function sessionOptions(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid session options.');
   const { mode = 'assistant', instance = 1 } = input;
-  if (!['assistant', 'group-counting', 'shared-counting'].includes(mode) || !Number.isInteger(instance) || instance < 1 || instance > 3) {
+  if (!['assistant', 'group-counting'].includes(mode) || !Number.isInteger(instance) || instance < 1 || instance > 3) {
     throw new Error('Choose assistant or group-counting mode and a participant from 1 to 3.');
   }
   if (mode === 'assistant') return { instructions: AGENT_INSTRUCTIONS, voice: AGENT_VOICE };
-  if (mode === 'shared-counting') return { instructions: COUNTING_INSTRUCTIONS, voice: AGENT_VOICE };
   return {
     voice: ['marin', 'cedar', 'coral'][instance - 1],
     instructions: `You are participant ${instance} in a spoken group counting experiment with three independent voice agents.

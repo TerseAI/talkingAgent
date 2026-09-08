@@ -19,7 +19,7 @@
     "@fontsource-variable/manrope": "^5.3.0",
     "@openai/agents": "^0.17.0",
     "express": "^5.2.1",
-    "little-durable-objects": "file:../Desktop/projects/durable-objects/npm",
+    "little-durable-objects": "file:../little-durable-objects/npm",
     "lucide-react": "^1.42.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

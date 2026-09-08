@@ -37,11 +37,11 @@ export default function SharedCounter({ snapshot, error, inSession }: {
     finally { setResetting(false); }
   };
   return <section className="shared-counter" aria-label="Shared counter">
-    <div className="counter-heading"><h2 aria-label="Completed count"><span data-testid="shared-count">{snapshot?.count ?? '—'}</span><span className="counter-target"> / 100</span></h2>
+    <div className="counter-heading"><h2 aria-label="Reported count"><span data-testid="shared-count">{snapshot?.count ?? '—'}</span><span className="counter-target"> / 100</span></h2>
       <button className="text-button" onClick={() => void reset()} disabled={!snapshot || inSession || resetting}><RotateCcw size={15} />{resetting ? 'Resetting…' : 'Reset count'}</button>
     </div>
     <progress aria-label="Group counting progress" max={100} value={snapshot?.count ?? 0} />
-    <p className="counter-status" role="status">{error ? error : !snapshot ? 'Connecting to the local counter…' : snapshot.done ? '100 reached. Every turn is complete.' : snapshot.talkingStick ? `Agent ${snapshot.talkingStick.slice(0, 8)} has the talking stick for ${snapshot.number}.` : `The talking stick is free. Next number: ${snapshot.number}.`}</p>
+    <p className="counter-status" role="status">{error ? error : !snapshot ? 'Connecting to the local counter…' : snapshot.done ? 'The agents have reported 100.' : snapshot.talkingStick ? `Agent ${snapshot.talkingStick.slice(0, 8)} has the talking stick for ${snapshot.number}.` : `The talking stick is free. Next number: ${snapshot.number}.`}</p>
     {resetError && <p role="alert">{resetError}</p>}
   </section>;
 }

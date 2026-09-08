@@ -1,9 +1,8 @@
 import type { RealtimeItem, RealtimeSession } from '@openai/agents/realtime';
-import { AGENT_NAME, AGENT_MODEL, AGENT_VOICE, AGENT_INSTRUCTIONS, COUNTING_INSTRUCTIONS } from '../shared/agent-config.mjs';
-import { CountingCoordinator, type CountingState } from './counting-coordinator';
+import { AGENT_NAME, AGENT_MODEL, AGENT_VOICE, AGENT_INSTRUCTIONS } from '../shared/agent-config.mjs';
 import { counterRequest } from './counter-api';
+import { CounterLock } from './counter-lock';
 
-export type VoiceMode = 'assistant' | 'shared-counting';
 
 export type TranscriptEntry = {
   id: string;
@@ -18,7 +17,6 @@ export type VoiceState = {
   playbackBlocked: boolean;
   error: string | null;
   transcript: TranscriptEntry[];
-  counting: CountingState | null;
 };
 
 export function toTranscript(history: RealtimeItem[]): TranscriptEntry[] {
@@ -42,11 +40,13 @@ function readableError(error: unknown): string {
 type Dependencies = {
   getMedia: () => Promise<MediaStream>;
   createAudio: () => HTMLAudioElement;
-  getToken: (signal: AbortSignal, mode?: VoiceMode) => Promise<string>;
-  createSession: (stream: MediaStream, audio: HTMLAudioElement, counter?: CountingCoordinator) => Promise<RealtimeSession>;
+  createLock?: (clientId: string, signal: AbortSignal) => CounterLock;
+  getToken: (signal: AbortSignal) => Promise<string>;
+  createSession: (stream: MediaStream, audio: HTMLAudioElement, clientId: string, signal: AbortSignal, lock?: CounterLock) => Promise<RealtimeSession>;
 };
 
 const browserDependencies: Dependencies = {
+  createLock: (clientId, signal) => new CounterLock(clientId, signal, new EventSource(`/api/counter/events?clientId=${encodeURIComponent(clientId)}`)),
   getMedia: () => {
     if (!globalThis.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       throw new Error('Microphone access requires localhost or an HTTPS connection in a supported browser.');
@@ -59,8 +59,8 @@ const browserDependencies: Dependencies = {
     audio.setAttribute('playsinline', '');
     return audio;
   },
-  getToken: async (signal, mode = 'assistant') => {
-    const response = await fetch('/api/session', { method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) });
+  getToken: async (signal) => {
+    const response = await fetch('/api/session', { method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
     const data = await response.json().catch(() => null);
     if (!response.ok) throw new Error(data?.error || 'The server could not start a session. Please try again.');
     if (typeof data?.value !== 'string' || !data.value.startsWith('ek_')) {
@@ -68,17 +68,13 @@ const browserDependencies: Dependencies = {
     }
     return data.value;
   },
-  createSession: async (stream, audio, counter) => {
-    const { RealtimeAgent, RealtimeSession, OpenAIRealtimeWebRTC, tool, backgroundResult } = await import('@openai/agents/realtime');
-    const { z } = await import('zod');
+  createSession: async (stream, audio, clientId, signal, lock) => {
+    const { RealtimeAgent, RealtimeSession, OpenAIRealtimeWebRTC } = await import('@openai/agents/realtime');
+    const { createCounterTools } = await import('./counter-tools');
     const agent = new RealtimeAgent({
-      name: AGENT_NAME, instructions: counter ? COUNTING_INSTRUCTIONS : AGENT_INSTRUCTIONS,
-      tools: counter ? [tool({
-        name: 'get_latest_count',
-        description: 'Read the shared Durable Object counter and wait for a counting turn. Only say the returned next_number when status is granted. Stop when status is done.',
-        parameters: z.object({}),
-        execute: async () => backgroundResult(await counter.claimTool()),
-      })] : [],
+      name: AGENT_NAME,
+      instructions: AGENT_INSTRUCTIONS,
+      tools: createCounterTools(clientId, signal, lock!.claim, counterRequest, lock!.cancel),
     });
     return new RealtimeSession(agent, {
       model: AGENT_MODEL,
@@ -87,7 +83,7 @@ const browserDependencies: Dependencies = {
         audio: {
           input: {
             transcription: { model: 'gpt-4o-mini-transcribe' },
-            turnDetection: counter ? null : { type: 'semantic_vad', createResponse: true, interruptResponse: true },
+            turnDetection: { type: 'semantic_vad', createResponse: true, interruptResponse: true },
           },
           output: { voice: AGENT_VOICE },
         },
@@ -99,7 +95,7 @@ const browserDependencies: Dependencies = {
 export class VoiceController {
   private state: VoiceState = {
     status: 'idle', activity: 'listening', muted: false, playbackBlocked: false,
-    error: null, transcript: [], counting: null,
+    error: null, transcript: [],
   };
   private listeners = new Set<() => void>();
   private session: RealtimeSession | null = null;
@@ -108,7 +104,8 @@ export class VoiceController {
   private abort: AbortController | null = null;
   private timeout: ReturnType<typeof setTimeout> | null = null;
   private cleanups: (() => void)[] = [];
-  private counter: CountingCoordinator | null = null;
+  private clientId: string | null = null;
+  private lock: CounterLock | null = null;
 
   constructor(private deps: Dependencies = browserDependencies) {}
 
@@ -124,10 +121,12 @@ export class VoiceController {
   }
 
   private release() {
+    this.lock?.cancel();
+    this.lock = null;
     this.abort?.abort();
     this.abort = null;
-    this.counter?.stop();
-    this.counter = null;
+    if (this.clientId) void counterRequest('cancel', { clientId: this.clientId }).catch(() => {});
+    this.clientId = null;
     if (this.timeout) clearTimeout(this.timeout);
     this.timeout = null;
     this.cleanups.splice(0).forEach((cleanup) => cleanup());
@@ -149,13 +148,13 @@ export class VoiceController {
     this.update({ status: 'error', error: readableError(error), muted: false, playbackBlocked: false });
   }
 
-  start = async (mode: VoiceMode = 'assistant') => {
+  start = async () => {
     if (this.state.status === 'connecting' || this.state.status === 'connected') return;
     this.release();
     const abort = new AbortController();
     const current = () => !abort.signal.aborted;
     this.abort = abort;
-    this.update({ status: 'connecting', error: null, transcript: [], activity: 'listening', muted: mode === 'shared-counting', playbackBlocked: false, counting: null });
+    this.update({ status: 'connecting', error: null, transcript: [], activity: 'listening', muted: false, playbackBlocked: false });
     this.timeout = setTimeout(() => {
       if (current()) this.fail(new Error('The connection timed out. Check microphone permission and your internet connection, then try again.'));
     }, 30_000);
@@ -171,29 +170,16 @@ export class VoiceController {
         track.addEventListener('ended', ended);
         this.cleanups.push(() => track.removeEventListener('ended', ended));
       });
-      const token = await this.deps.getToken(abort.signal, mode);
+      const token = await this.deps.getToken(abort.signal);
       if (!current()) return;
       const audio = this.deps.createAudio();
       this.audio = audio;
-      if (mode === 'shared-counting') {
-        audio.muted = true;
-        this.counter = new CountingCoordinator({
-          request: counterRequest,
-          requestResponse: (options) => {
-            if (!this.session?.transport.requestResponse) throw new Error('This transport cannot request a counting turn.');
-            this.session.transport.requestResponse(options);
-          },
-          setOutputEnabled: (enabled) => { audio.muted = !enabled; },
-          canConfirmPlayback: () => !audio.paused && !audio.muted && audio.volume > 0 && !this.state.playbackBlocked,
-          onState: (counting) => { if (current()) this.update({ counting }); },
-          onError: (message) => { if (current()) this.fail(new Error(message)); },
-          onDone: () => { if (current()) this.stop(); },
-        });
-      }
       const play = () => { void audio.play().catch(() => { if (current()) this.update({ playbackBlocked: true }); }); };
       audio.addEventListener('canplay', play);
       this.cleanups.push(() => audio.removeEventListener('canplay', play));
-      const session = await this.deps.createSession(stream, audio, this.counter ?? undefined);
+      this.clientId = crypto.randomUUID();
+      this.lock = this.deps.createLock?.(this.clientId, abort.signal) ?? null;
+      const session = await this.deps.createSession(stream, audio, this.clientId, abort.signal, this.lock ?? undefined);
       if (!current()) { session.close(); return; }
       this.session = session;
 
@@ -203,17 +189,14 @@ export class VoiceController {
       session.on('audio_interrupted', () => { if (current()) this.update({ activity: 'listening' }); });
       session.on('transport_event', (event) => {
         if (!current()) return;
-        this.counter?.receive(event);
-        if (!current()) return;
-        if (event.type === 'input_audio_buffer.speech_started') this.update({ activity: 'listening' });
+        if (event.type === 'input_audio_buffer.speech_started') {
+          this.update({ activity: 'listening' });
+        }
         if (event.type === 'input_audio_buffer.speech_stopped' || event.type === 'response.created') this.update({ activity: 'thinking' });
         if (event.type === 'response.done') {
           const response = event.response as { status?: string } | undefined;
           if (response?.status === 'failed') this.fail(new Error('OpenAI could not complete the response. Check your API usage limits and try a new conversation.'));
         }
-      });
-      session.on('agent_tool_end', (_context, _agent, tool) => {
-        if (current() && tool.name === 'get_latest_count') this.counter?.toolFinished();
       });
       session.on('error', () => {
         if (current()) this.fail(new Error('OpenAI reported a session error. Check your API access and usage limits, then start a new conversation.'));
@@ -231,31 +214,36 @@ export class VoiceController {
       if (!current()) { session.close(); return; }
       if (this.timeout) clearTimeout(this.timeout);
       this.timeout = null;
-      stream.getAudioTracks().forEach((track) => { track.enabled = mode === 'assistant'; });
+      stream.getAudioTracks().forEach((track) => { track.enabled = true; });
       this.update({ status: 'connected' });
-      if (this.counter) void this.counter.start();
     } catch (error) {
       if (current()) this.fail(error);
     }
   };
+
+  private cancelTurn() {
+    this.lock?.cancel();
+    if (this.clientId) void counterRequest('cancel', { clientId: this.clientId }).catch(() => {});
+  }
 
   stop = () => {
     this.release();
     this.update({ status: 'ended', muted: false, playbackBlocked: false });
   };
   toggleMute = () => {
-    if (this.counter || this.state.status !== 'connected' || !this.session) return;
+    if (this.state.status !== 'connected' || !this.session) return;
     const muted = !this.state.muted;
     this.session.mute(muted);
     this.update({ muted });
   };
   interrupt = () => {
-    if (this.counter || this.state.status !== 'connected') return;
+    if (this.state.status !== 'connected') return;
+    this.cancelTurn();
     this.session?.interrupt();
     this.update({ activity: 'listening' });
   };
   send = (text: string) => {
-    if (this.counter || !text.trim() || this.state.status !== 'connected' || !this.session) return;
+    if (!text.trim() || this.state.status !== 'connected' || !this.session) return;
     try {
       this.session.sendMessage(text.trim());
       this.update({ activity: 'thinking' });

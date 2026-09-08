@@ -1,9 +1,15 @@
 import express from 'express';
 import { z } from 'zod';
+import { counterEvents } from './counter-events.mjs';
 
 /** @param {Pick<import('../src/durable-objects.ts').Counter, 'getState' | 'getLatestCount' | 'doneSpeaking' | 'stop' | 'reset'> | null} counter */
 export function counterRouter(counter, allowedOrigins) {
   const router = express.Router();
+  router.get('/events', (req, res) => {
+    const parsed = z.string().uuid().safeParse(req.query.clientId);
+    if (!parsed.success) return res.status(400).json({ error: 'Invalid agent identity.' });
+    return counterEvents(counter, parsed.data, req, res);
+  });
   router.get('/', async (_req, res) => {
     try { res.json(await counter.getState()); }
     catch { res.status(503).json({ error: 'Start npm run counter, then restart npm run dev.' }); }

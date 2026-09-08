@@ -61,7 +61,7 @@ export function createApp({ apiKey = '', allowedOrigins = [], fetchImpl = fetch,
             audio: {
               input: {
                 transcription: { model: 'gpt-4o-mini-transcribe' },
-                turn_detection: req.body?.mode === 'shared-counting' ? null : { type: 'semantic_vad', create_response: true, interrupt_response: true },
+                turn_detection: { type: 'semantic_vad', create_response: true, interrupt_response: true },
               },
               output: { voice: options.voice },
             },

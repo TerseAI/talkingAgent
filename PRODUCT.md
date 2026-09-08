@@ -27,8 +27,8 @@ Implement the supplied OpenAI RealtimeAgent / RealtimeSession example as a runna
 - Assumption: local development is the initial deployment target.
 - Current target: web hosts, each running one independent voice agent. No simulator is needed.
 - Agents coordinate on counting to 100 using one local little-durable-objects actor and the get_latest_count model tool.
-- The DO stores the next number and a talking stick identifying its speaker. Playback completion advances the number and frees the stick.
-- Keep the original voice chat available alongside counting mode.
+- The DO stores the next number, a talking stick, and a FIFO queue. It reserves each handoff for one waiter and pulses only that agent over its socket. Model-selected tools claim, complete, and release turns; completion records an agent report, not verified playback.
+- One normal voice session with microphone input and interruptions. Count only when asked; no forced response loop or separate counting mode.
 
 ## Product Principles
 

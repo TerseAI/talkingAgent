@@ -15,23 +15,18 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   await page.route('**/api/config', (route) => route.fulfill({ json: { configured: false } }));
   await page.goto(base);
-  await expect(page.getByRole('heading', { name: 'Count together.' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Start this agent', exact: true })).toBeDisabled();
-  await page.screenshot({ path: '.qa/counting-desktop.png', fullPage: true });
-  await page.getByRole('button', { name: 'Voice chat', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Talk to your agent.' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'One thing before we talk' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Start conversation', exact: true })).toBeDisabled();
   await page.screenshot({ path: '.qa/desktop.png', fullPage: true });
   await page.getByRole('button', { name: 'Open help' }).click();
-  await expect(page.getByRole('heading', { name: 'A natural conversation' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Voice conversation', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Close help' }).click();
 
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, deviceScaleFactor: 2 });
   mobile.on('pageerror', (error) => errors.push(error.message));
   await mobile.route('**/api/config', (route) => route.fulfill({ json: { configured: false } }));
   await mobile.goto(base);
-  await mobile.screenshot({ path: '.qa/counting-mobile.png', fullPage: true });
-  await mobile.getByRole('button', { name: 'Voice chat', exact: true }).click();
   await expect(mobile.getByRole('heading', { name: 'One thing before we talk' })).toBeVisible();
   expect(await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await mobile.screenshot({ path: '.qa/mobile.png', fullPage: true });
@@ -58,7 +53,6 @@ try {
     };
   });
   await page.reload();
-  await page.getByRole('button', { name: 'Voice chat', exact: true }).click();
   await page.unroute('**/api/session');
   let tokenRoute;
   await page.route('**/api/session', (route) => { tokenRoute = route; });
@@ -77,7 +71,6 @@ try {
     navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException('Denied', 'NotAllowedError'));
   });
   await denied.goto(base);
-  await denied.getByRole('button', { name: 'Voice chat', exact: true }).click();
   await denied.getByRole('button', { name: 'Start conversation', exact: true }).click();
   await expect(denied.getByRole('alert')).toContainText('Microphone access was denied');
   expect(errors).toEqual([]);
