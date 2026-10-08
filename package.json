@@ -1,0 +1,46 @@
+{
+  "name": "talking-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
+    "build": "tsc -b && npm --prefix ui run build",
+    "start": "NODE_ENV=production npm run dev",
+    "typecheck": "tsc -b",
+    "test": "node --import tsx --test tests/*.test.mjs",
+    "actors": "DURABLE_ACTORS_ENTRYPOINT=src/counting-room.ts DURABLE_ACTORS_DATA_DIR=.durable-actors durable-actors dev --port 7110",
+    "test:counting:live": "node --env-file-if-exists=.env --import tsx scripts/counting-integration.mjs",
+    "dev:ui": "npm --prefix ui run dev",
+    "dev:api": "SERVE_UI=false node --env-file-if-exists=.env scripts/dev.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/manrope": "^5.3.0",
+    "@openai/agents": "^0.17.0",
+    "express": "^5.2.1",
+    "durable-actors": "0.7.16",
+    "lucide-react": "^1.42.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "ws": "^8.21.3",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.5.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  },
+  "pnpm": {
+    "overrides": {
+      "dts-bundle-generator>typescript": "~5.9.3"
+    }
+  }
+}
